@@ -1,4 +1,3 @@
-File Edit Options Buffers Tools Python Help                                                                                                         
 #!/usr/bin/env python3                                                                                                                              
 
 import sys
