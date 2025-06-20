@@ -3,43 +3,67 @@ import sys
 import argparse
 import re
 import pandas as pd
-import codecs # For handling escape sequences
-from io import StringIO # For handling piped input with pandas
+import codecs  # For handling escape sequences
+from io import StringIO  # For piped input handling with pandas
 from collections import Counter
 
-CHUNK_SIZE = 10000 # Default chunk size for low-memory processing
+# Default chunk size when processing input in low-memory mode.
+CHUNK_SIZE = 10000
+
+# --------------------------
+# Utility Functions
+# --------------------------
+def _clean_string_for_header_and_data(s):
+    """Cleans up a string for headers and data."""
+    if not isinstance(s, str):
+        return s
+    s = s.lower()
+    s = s.replace(' ', '_')
+    s = re.sub(r'[^\w_]', '', s)
+    s = re.sub(r'_{2,}', '_', s)
+    return s
+
+def get_unique_header(candidate, df):
+    """Returns a unique header name given a candidate and the current DataFrame headers."""
+    if candidate not in df.columns:
+        return candidate
+    base = candidate
+    i = 1
+    while f"{base}_{i}" in df.columns:
+        i += 1
+    return f"{base}_{i}"
+
+def _print_verbose(args, message):
+    """Prints verbose output if enabled."""
+    if args.verbose:
+        sys.stderr.write(f"VERBOSE: {message}\n")
 
 def _parse_column_arg(value, df_columns, is_header_present, arg_name="column"):
     """
-    Parses a column argument, converting 1-indexed to 0-indexed, or resolving column name.
-    Returns the 0-indexed integer position.
+    Parses a column argument (1-indexed numeric or header name) and returns the corresponding 0-indexed column.
     """
     try:
-        # If it's a number, assume 1-indexed and convert to 0-indexed
         col_idx = int(value)
         if col_idx < 1:
-            raise ValueError(f"Error: {arg_name} index '{value}' must be 1 or greater (1-indexed).")
-        # Check if 0-indexed is out of bounds, allowing to-col to be one past for insertion
+            raise ValueError(f"Error: {arg_name} index '{value}' must be >= 1 (1-indexed).")
         if col_idx - 1 > len(df_columns):
-            raise IndexError(f"Error: {arg_name} index '{value}' (1-indexed) is out of bounds. Max column index is {len(df_columns)}.")
+            raise IndexError(f"Error: {arg_name} index '{value}' is out of bounds. Max is {len(df_columns)}.")
         return col_idx - 1
-    except ValueError as e:
-        # If not a number, assume it's a column name (only if header is present)
+    except ValueError:
         if not is_header_present:
-            raise ValueError(f"Error: Cannot use column name '{value}' for {arg_name} when no header is present (--header=None). Use 1-indexed integer.")
+            raise ValueError(f"Error: Cannot use column name '{value}' for {arg_name} when no header is present (--header=None). Use a 1-indexed integer.")
         if value not in df_columns:
-            raise ValueError(f"Error: Column '{value}' not found in header for {arg_name}. Available columns: {list(df_columns)}.")
-        return df_columns.get_loc(value) # Get 0-indexed position by name
+            raise ValueError(f"Error: Column '{value}' not found in header for {arg_name}. Available: {list(df_columns)}.")
+        return df_columns.get_loc(value)
     except IndexError as e:
-        raise e # Re-raise if it's an IndexError from bounds check
+        raise e
 
 def _parse_multiple_columns_arg(values, df_columns, is_header_present, arg_name="columns"):
     """
-    Parses a comma-separated string of column indices/names, returning a list of 0-indexed integers.
+    Parses a comma-separated string of columns (numeric or names) and returns a list of their 0-indexed positions.
     """
     if values.lower() == "all":
         return list(range(len(df_columns)))
-    
     col_indices = []
     for val in values.split(','):
         val = val.strip()
@@ -48,142 +72,144 @@ def _parse_multiple_columns_arg(values, df_columns, is_header_present, arg_name=
         try:
             col_indices.append(_parse_column_arg(val, df_columns, is_header_present, arg_name))
         except (ValueError, IndexError) as e:
-            raise type(e)(f"Error parsing {arg_name} '{values}': {e}") # Re-raise with context
+            raise type(e)(f"Error parsing {arg_name} '{values}': {e}")
     return col_indices
 
-
-def _clean_string_for_header_and_data(s):
-    """Applies cleanup rules to a string."""
-    if not isinstance(s, str):
-        return s # Return as is if not a string (e.g., NaN, None)
-    s = s.lower()
-    s = s.replace(' ', '_')
-    s = re.sub(r'[^\w_]', '', s) # Remove non-alphanumeric or underscore characters
-    s = re.sub(r'_{2,}', '_', s) # Squeeze multiple underscores
-    return s
-
-def _print_verbose(args, message):
-    """Prints a message to stderr if verbose mode is enabled."""
-    if args.verbose:
-        sys.stderr.write(f"VERBOSE: {message}\n")
-
+# --------------------------
+# Argument Parser
+# --------------------------
 def _setup_arg_parser():
-    """Sets up and returns the argument parser for the field_manipulate script."""
     parser = argparse.ArgumentParser(
-        description="""A command-line tool for manipulating table fields.
-
-Usage:
-    tbl.py [GLOBAL_OPTIONS] <operation> [OPERATION_SPECIFIC_OPTIONS]
-
-Global Options affect how input is read and general script behavior.
-Operations perform specific data manipulations and have their own options.
-""",
+        description=(
+            "A command-line tool for manipulating table fields.\n\n"
+            "Usage:\n"
+            "    tbl.py [GLOBAL_OPTIONS] <operation> [OPERATION_SPECIFIC_OPTIONS]\n\n"
+            "Global Options affect how input is read and overall behavior.\n"
+            "Operations perform specific data manipulations.\n"
+            "Use 'tbl.py <operation> --help' for details on each."
+        ),
         formatter_class=argparse.RawTextHelpFormatter
     )
     
-    # Global arguments group
-    global_options_group = parser.add_argument_group("Global Options")
-    global_options_group.add_argument(
+    # Global Options
+    global_options = parser.add_argument_group("Global Options")
+    global_options.add_argument(
         "-s", "--sep", default="\t",
-        help="(-s, --sep) Input/output field separator (default: tab). "
-             "Supports escape sequences like '\\t', '\\n'."
+        help="(-s, --sep) Field separator (default: tab). Supports escape sequences (e.g., '\\t', '\\n')."
     )
-    global_options_group.add_argument(
+    global_options.add_argument(
         "--header", type=str, default="0", choices=["0", "None"],
-        help="(--header) Specify header row. '0' for first row as header (default), "
-             "'None' for no header. Column operations are 1-indexed relative to data."
+        help=("(--header) Specify header row: '0' for first row as header (default) or 'None' for no header. "
+              "Column operations are 1-indexed relative to data.")
     )
-    global_options_group.add_argument(
+    global_options.add_argument(
         "--verbose", action="store_true",
-        help="(--verbose) Enable verbose output for debugging to stderr."
+        help="(--verbose) Enable verbose debug output to stderr."
     )
-    global_options_group.add_argument(
+    global_options.add_argument(
         "-r", "--row-index",
-        help="(-r, --row-index) Specify a column (1-indexed or name) to be treated as a row identifier. "
-             "This column will be preserved and typically shown first in output for relevant operations."
+        help=("(-r, --row-index) Specify a column (1-indexed or name) to serve as the row identifier. "
+              "This column is preserved and typically shows first in output.")
     )
-    global_options_group.add_argument(
+    global_options.add_argument(
         "--lowmem", action="store_true",
-        help="(--lowmem) Process data in chunks to reduce memory usage. Not all operations support this fully. "
-             "Operations fully supporting low-memory: grep, tr, strip, prefix_add, cleanup_values, value_counts, numeric_map, regex_capture. "
-             "The 'sort' operation is incompatible with --lowmem."
+        help=("(--lowmem) Process data in chunks to reduce memory usage. Not all operations support this fully. "
+              "Operations that fully support low-memory: grep, tr, strip, prefix_add, cleanup_values, value_counts, numeric_map, regex_capture. "
+              "The 'sort' operation is incompatible with --lowmem.")
     )
-
-
+    
     subparsers = parser.add_subparsers(
         dest="operation",
-        help="""Available operations. Each operation has its own specific arguments.
-Use 'field_manipulate.py <operation> --help' for details on each operation."""
+        help="Available operations. Use 'tbl.py <operation> --help' for details."
     )
-
-    # --- Move Operation ---
-    parser_move = subparsers.add_parser(
-        "move", help="Move a column. Required: -i, -j."
+    
+    # MOVE
+    parser_move = subparsers.add_parser("move", help="Move a column. Required: -i and -j.")
+    parser_move.add_argument(
+        "-i", required=True,
+        help="(-i) Source column (index 1-indexed or name)."
     )
     parser_move.add_argument(
-        "-i", "--from-col", required=True,
-        help="(-i, --from-col) Source column index (1-indexed) or name."
+        "-j", required=True,
+        help="(-j) Destination column (index 1-indexed or name). If beyond existing columns, appends."
     )
-    parser_move.add_argument(
-        "-j", "--to-col", required=True,
-        help="(-j, --to-col) Destination column index (1-indexed) or name. If beyond existing columns, appends."
-    )
-
-    # --- col_insert Operation (Renamed from Insert) ---
-    parser_col_insert = subparsers.add_parser(
-        "col_insert", help="Insert a new column. Required: -i, -v."
-    )
+    
+    # COL_INSERT
+    parser_col_insert = subparsers.add_parser("col_insert", help="Insert a new column. Required: -i and -v.")
     parser_col_insert.add_argument(
-        "-i", "--col-idx", required=True,
-        help="(-i, --col-idx) Column index (1-indexed) or name where the new column will be inserted."
+        "-i", required=True,
+        help="(-i) Column position (1-indexed or name) where the new column will be inserted."
     )
     parser_col_insert.add_argument(
         "-v", "--value", required=True,
-        help="(-v, --value) Value to insert into the new column. Supports escape sequences."
+        help="(-v) Value to populate in the new column. Supports escape sequences."
     )
     parser_col_insert.add_argument(
         "--new-header", default="new_column",
         help="(--new-header) Header name for the new column (default: 'new_column')."
     )
-
-    # --- col_drop Operation (Renamed from Drop) ---
-    parser_col_drop = subparsers.add_parser(
-        "col_drop", help="Drop columns. Required: -i."
-    )
+    
+    # COL_DROP
+    parser_col_drop = subparsers.add_parser("col_drop", help="Drop columns. Required: -i.")
     parser_col_drop.add_argument(
-        "-i", "--cols-to-drop", required=True,
-        help="(-i, --cols-to-drop) Comma-separated list of column indices (1-indexed) or names to drop. Use 'all' to drop all columns."
+        "-i", required=True,
+        help="(-i) Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns."
     )
-
-    # --- Grep Operation (formerly Query) ---
-    parser_grep = subparsers.add_parser(
-        "grep", help="Filter rows. Required: -i, (-p | --starts-with | --ends-with)."
-    )
-    parser_grep_group = parser_grep.add_mutually_exclusive_group(required=True)
+    
+    # GREP
+    #-
+    # GREP
+    parser_grep = subparsers.add_parser("grep", help="Filter rows. Required: -i and one of -p, --starts-with, --ends-with, or --word-file.")
+    group_grep = parser_grep.add_mutually_exclusive_group(required=True)
     parser_grep.add_argument(
-        "-i", "--col-idx", required=True,
-        help="(-i, --col-idx) Column index (1-indexed) or name to grep."
+        "-i", required=True,
+        help="(-i) Column (1-indexed or name) to apply the grep filter."
     )
-    parser_grep_group.add_argument(
+    group_grep.add_argument(
         "-p", "--pattern",
-        help="(-p, --pattern) Regular expression pattern to search for."
+        help="(-p, --pattern) Regex pattern to search for."
     )
-    parser_grep_group.add_argument(
+    group_grep.add_argument(
         "--starts-with",
-        help="(--starts-with) String to check if column value starts with."
+        help="(--starts-with) String that the column value should start with."
     )
-    parser_grep_group.add_argument(
+    group_grep.add_argument(
         "--ends-with",
-        help="(--ends-with) String to check if column value ends with."
+        help="(--ends-with) String that the column value should end with."
     )
-
-    # --- Split Operation ---
-    parser_split = subparsers.add_parser(
-        "split", help="Split a column. Required: -i, -d."
+    group_grep.add_argument(
+        "--word-file",
+        help="File containing words (one per line) to match against the column values."
     )
+    # New options for word file matching:
+    parser_grep.add_argument(
+        "--substring-match",
+        action="store_true",
+        help=("By default, when matching the word-file a whole-word match is enforced (using \\b boundaries). "
+              "Use this flag to allow substring matching instead.")
+    )
+    parser_grep.add_argument(
+        "--tokenize",
+        action="store_true",
+        help="Split the target field on '.' and use the first token for matching (i.e. the gene name)."
+    )
+    parser_grep.add_argument(
+        "--list-missing-words",
+        action="store_true",
+        help="After processing, report which words (from the word file) were not found in the input."
+    )
+    parser_grep.add_argument(
+        "-v", "--invert", action="store_true",
+        help="Invert match: select rows that do NOT match the specified pattern or words in the file."
+    )
+    
+    #-
+    
+    # SPLIT
+    parser_split = subparsers.add_parser("split", help="Split a column. Required: -i and -d.")
     parser_split.add_argument(
-        "-i", "--col-idx", required=True,
-        help="(-i, --col-idx) Column index (1-indexed) or name to split."
+        "-i", required=True,
+        help="(-i) Column (1-indexed or name) to split."
     )
     parser_split.add_argument(
         "-d", "--delimiter", required=True,
@@ -191,78 +217,66 @@ Use 'field_manipulate.py <operation> --help' for details on each operation."""
     )
     parser_split.add_argument(
         "--new-header-prefix", default="split_col",
-        help="(--new-header-prefix) Prefix for new headers (e.g., 'split_col_1', 'split_col_2')."
+        help="(--new-header-prefix) Prefix for the new columns (e.g., 'split_col_1')."
     )
-
-    # --- Join Operation (formerly Merge) ---
-    parser_join = subparsers.add_parser(
-        "join", help="Join columns. Required: -i."
-    )
+    
+    # JOIN
+    parser_join = subparsers.add_parser("join", help="Join columns. Required: -i. Optionally, -j specifies target column.")
     parser_join.add_argument(
-        "-i", "--cols-to-join", required=True,
-        help="(-i, --cols-to-join) Comma-separated list of column indices (1-indexed) or names to join."
+        "-i", required=True,
+        help="(-i) Comma-separated list of columns (1-indexed or names) to join."
     )
     parser_join.add_argument(
         "-d", "--delimiter", default="",
-        help="(-d, --delimiter) Delimiter to use when joining columns (default: no delimiter). Supports escape sequences."
+        help="(-d, --delimiter) Delimiter to insert between joined values (default: no delimiter). Supports escape sequences."
     )
     parser_join.add_argument(
         "--new-header", default="joined_column",
-        help="(--new-header) Header name for the new joined column (default: 'joined_column')."
+        help="(--new-header) Header name for the resulting joined column (default: 'joined_column')."
     )
     parser_join.add_argument(
         "-j", "--target-col-idx",
-        help="(-j, --target-col-idx) 1-indexed target column index or name for the new joined column. "
-             "If not specified, replaces the first column in --cols-to-join."
-    )
-
-    # --- Tr Operation (formerly Translate) ---
-    parser_tr = subparsers.add_parser(
-        "tr", help="Map values. Required: -i, (-d | (--from-val & --to-val))."
-    )
-    parser_tr.add_argument(
-        "-i", "--col-idx", required=True,
-        help="(-i, --col-idx) Column index (1-indexed) or name to tr."
+        help="(-j) (Optional) Target column (1-indexed or name) where the joined column will be placed. Defaults to the first specified in -i."
     )
     
-    # Mutually exclusive group for translation source
-    tr_source_group = parser_tr.add_mutually_exclusive_group(required=True)
-    tr_source_group.add_argument(
+    # TR (Translate)
+    parser_tr = subparsers.add_parser("tr", help="Translate values. Required: -i and either -d (dict file) or --from-val with --to-val.")
+    parser_tr.add_argument(
+        "-i", required=True,
+        help="(-i) Column (1-indexed or name) to translate."
+    )
+    tr_group = parser_tr.add_mutually_exclusive_group(required=True)
+    tr_group.add_argument(
         "-d", "--dict-file",
-        help="(-d, --dict-file) Path to a two-column file (key<sep>value) for tr mapping, "
-             "using the main --sep as the dictionary file separator."
+        help="(-d, --dict-file) Path to a two-column file (key<sep>value) for mapping. Uses the main --sep as separator."
     )
-    tr_source_group.add_argument( # This will be the trigger for single replacement mode
+    tr_group.add_argument(
         "--from-val",
-        help="(--from-val) Original value to tr from (for single translation). Supports escape sequences."
+        help="(--from-val) Value to translate from (for single translation). Supports escape sequences."
     )
-    parser_tr.add_argument( # This argument is not part of the M-E group, but depends on --from-val
+    parser_tr.add_argument(
         "--to-val",
-        help="(--to-val) New value to tr to (for single translation). Supports escape sequences."
+        help="(--to-val) Value to translate to (for single translation). Supports escape sequences."
     )
     parser_tr.add_argument(
         "--regex", action="store_true",
-        help="(--regex) Treat --from-val as a regular expression pattern when performing single translation (default is literal)."
+        help="(--regex) Treat --from-val as a regex pattern (default is literal)."
     )
-
     parser_tr.add_argument(
         "--new-header", default="_translated",
-        help="(--new-header) Suffix for the new tr column's header (e.g., 'OriginalCol_translated'). "
-             "If only '_translated' is given, it's appended to the original header. "
-             "If a full name is given, it replaces it. (default: '_translated')"
+        help=("(--new-header) Suffix or new header for the translated column. If a suffix (e.g., '_translated') is given, it is appended; "
+              "if a full name is given, it replaces the original. (default: '_translated')")
     )
     parser_tr.add_argument(
         "--in-place", action="store_true",
-        help="(--in-place) Modify the column in place instead of adding a new column."
+        help="(--in-place) Replace the original column with the translated values."
     )
-
-    # --- Sort Operation ---
-    parser_sort = subparsers.add_parser(
-        "sort", help="Sort table. Required: -i. Incompatible with --lowmem."
-    )
+    
+    # SORT
+    parser_sort = subparsers.add_parser("sort", help="Sort table. Required: -i. (Incompatible with --lowmem.)")
     parser_sort.add_argument(
-        "-i", "--by", required=True,
-        help="(-i, --by) Comma-separated list of column indices (1-indexed) or names to sort by."
+        "-i", required=True,
+        help="(-i) Column (1-indexed or name) to sort by. Only one column should be specified."
     )
     parser_sort.add_argument(
         "--desc", action="store_true",
@@ -270,644 +284,655 @@ Use 'field_manipulate.py <operation> --help' for details on each operation."""
     )
     parser_sort.add_argument(
         "-p", "--pattern",
-        help="(-p, --pattern) Regex pattern to extract numeric values for sorting (e.g., '\\b([0-9]+[\\.]?[0-9]+?)[A-Z]'). "
-             "Only the first captured group will be used. Requires --col-idx."
+        help=("(-p, --pattern) Regex pattern to extract a numeric key from the column specified by -i (e.g., '\\b([0-9]+(?:\\.[0-9]+)?)[A-Z]').")
     )
     parser_sort.add_argument(
         "--suffix-map",
-        help="(--suffix-map) Comma-separated key-value pairs for size suffix mapping (e.g., 'K:1000,M:1000000,G:1000000000'). "
-             "Used with --pattern for numeric sorting."
+        help=("(--suffix-map) Comma-separated key-value pairs for suffix mapping (e.g., 'K:1000,M:1000000,G:1000000000'). "
+              "Used with --pattern for numeric sorting. Ignored if --expand-scientific is used.")
     )
-
-    # --- Cleanup Header Operation ---
-    parser_cleanup_header = subparsers.add_parser(
-        "cleanup_header", help="Clean up header names: remove special chars, replace spaces with underscores, lowercase."
+    parser_sort.add_argument(
+        "--expand-scientific", action="store_true",
+        help=("If provided, uses a default mapping of K:1000, M:1000000, G:1000000000, T:1000000000000, and P:1000000000000000. "
+              "Overrides any supplied --suffix-map.")
     )
-
-    # --- Cleanup Values Operation (formerly Cleanup Data) ---
-    parser_cleanup_values = subparsers.add_parser(
-        "cleanup_values", help="Clean values in columns. Required: -i."
+    parser_sort.add_argument(
+        "-ps", "--pattern-string",
+        help=("Optional additional regex pattern for a secondary string sort key (e.g., '\\bchr2_([A-Za-z]+)_'). "
+              "If provided, the sort key becomes a tuple (numeric key, secondary key). For rows where this pattern does not match, the full value is used.")
     )
+    
+    # CLEANUP HEADER
+    parser_cleanup_header = subparsers.add_parser("cleanup_header", help="Clean header names (lowercase, remove special characters, replace spaces with underscores).")
+    
+    # CLEANUP VALUES
+    parser_cleanup_values = subparsers.add_parser("cleanup_values", help="Clean values in specified columns. Required: -i.")
     parser_cleanup_values.add_argument(
-        "-i", "--cols-to-clean", required=True,
-        help="(-i, --cols-to-clean) Comma-separated list of column indices (1-indexed) or names to clean. Use 'all' to clean all columns."
+        "-i", required=True,
+        help="(-i) Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column."
     )
-
-    # --- Prefix Add Operation ---
-    parser_prefix_add = subparsers.add_parser(
-        "prefix_add", help="Add prefix. Required: -i, -v."
-    )
+    
+    # PREFIX ADD
+    parser_prefix_add = subparsers.add_parser("prefix_add", help="Add a prefix to column values. Required: -i and -v.")
     parser_prefix_add.add_argument(
-        "-i", "--cols-to-prefix", required=True,
-        help="(-i, --cols-to-prefix) Comma-separated list of column indices (1-indexed) or names to add prefix to. Use 'all' for all columns."
+        "-i", required=True,
+        help="(-i) Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column."
     )
     parser_prefix_add.add_argument(
         "-v", "--string", required=True,
-        help="(-v, --string) String to add as a prefix. Supports escape sequences."
+        help="(-v) The prefix string to add. Supports escape sequences."
     )
     parser_prefix_add.add_argument(
         "-d", "--delimiter", default="",
-        help="(-d, --delimiter) Delimiter between the prefix and the original value (default: no delimiter). Supports escape sequences."
+        help="(-d, --delimiter) Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences."
     )
-
-    # --- Value Counts Operation (formerly Summarize) ---
-    parser_value_counts = subparsers.add_parser(
-        "value_counts", help="List top N frequent values. Required: -i."
-    )
+    
+    # VALUE COUNTS
+    parser_value_counts = subparsers.add_parser("value_counts", help="Count top occurring values. Required: -i.")
     parser_value_counts.add_argument(
         "-n", "--top-n", type=int, default=5,
-        help="(-n, --top-n) Number of top frequent values to list (default: 5)."
+        help="(-n, --top-n) Number of top values to display (default: 5)."
     )
     parser_value_counts.add_argument(
-        "-i", "--cols-to-count", required=True,
-        help="(-i, --cols-to-count) Comma-separated list of column indices (1-indexed) or names to count values for. Use 'all' for all columns."
+        "-i", required=True,
+        help="(-i) Comma-separated list of columns (1-indexed or names) to count. Use 'all' for every column."
     )
-
-    # --- Strip Operation ---
-    parser_strip = subparsers.add_parser(
-        "strip", help="Remove pattern from values. Required: -i, -p."
-    )
+    
+    # STRIP
+    parser_strip = subparsers.add_parser("strip", help="Remove a regex pattern from column values. Required: -i and -p.")
     parser_strip.add_argument(
-        "-i", "--col-idx", required=True,
-        help="(-i, --col-idx) Column index (1-indexed) or name to strip characters from."
+        "-i", required=True,
+        help="(-i) Column (1-indexed or name) to strip characters from."
     )
     parser_strip.add_argument(
         "-p", "--pattern", required=True,
-        help="(-p, --pattern) Regular expression pattern to remove from values."
+        help="(-p, --pattern) Regex pattern to remove from the values."
     )
     parser_strip.add_argument(
         "--new-header", default="_stripped",
-        help="(--new-header) Suffix for the new stripped column's header (e.g., 'OriginalCol_stripped'). "
-             "If only '_stripped' is given, it's appended to the original header. "
-             "If a full name is given, it replaces it. (default: '_stripped')"
+        help=("(--new-header) Suffix (or new header) for the column after stripping. If a suffix is given (e.g., '_stripped'), "
+              "it is appended; if a full name, it replaces the original. (default: '_stripped')")
     )
     parser_strip.add_argument(
         "--in-place", action="store_true",
-        help="(--in-place) Modify the column in place instead of adding a new column."
+        help="(--in-place) Modify the column in place instead of creating a new column."
     )
-
-    # --- Numeric Map Operation ---
-    parser_numeric_map = subparsers.add_parser(
-        "numeric_map", help="Map unique strings to numbers. Required: -i."
-    )
-    parser_numeric_map.add_argument( # Corrected argument name
-        "-i", "--col-idx", required=True,
-        help="(-i, --col-idx) Column index (1-indexed) or name to map to numeric values."
+    
+    # NUMERIC MAP
+    parser_numeric_map = subparsers.add_parser("numeric_map", help="Map unique string values to numbers. Required: -i.")
+    parser_numeric_map.add_argument(
+        "-i", required=True,
+        help="(-i) Column (1-indexed or name) whose unique values are to be mapped to numbers."
     )
     parser_numeric_map.add_argument(
         "--new-header",
-        help="(--new-header) Header name for the new numeric mapped column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME')."
+        help="(--new-header) Header for the new numeric mapping column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME')."
     )
-
-    # --- Regex Capture Operation ---
-    parser_regex_capture = subparsers.add_parser(
-        "regex_capture", help="Extract substrings using regex capture groups. Required: -i, -p."
-    )
+    
+    # REGEX CAPTURE
+    parser_regex_capture = subparsers.add_parser("regex_capture", help="Capture substrings using a regex group. Required: -i and -p.")
     parser_regex_capture.add_argument(
-        "-i", "--col-idx", required=True,
-        help="(-i, --col-idx) Column index (1-indexed) or name to apply the regex to."
+        "-i", required=True,
+        help="(-i) Column (1-indexed or name) on which to apply the regex."
     )
     parser_regex_capture.add_argument(
         "-p", "--pattern", required=True,
-        help="(-p, --pattern) Regular expression pattern with at least one capturing group '()' (e.g., 'ID=([^;]+)')."
+        help="(-p, --pattern) Regex pattern with at least one capturing group (e.g., 'ID=([^;]+)')."
     )
     parser_regex_capture.add_argument(
         "--new-header", default="_captured",
-        help="(--new-header) Suffix for the new captured column's header (e.g., 'OriginalCol_captured'). "
-             "If only '_captured' is given, it's appended to the original header. "
-             "If a full name is given, it replaces it. (default: '_captured')"
+        help=("(--new-header) Suffix or new header for the captured column (default: '_captured'). If a suffix (e.g., '_captured') is provided, "
+              "it is appended; if a full name, it replaces the original.")
     )
-
-    # --- View Operation ---
-    parser_view = subparsers.add_parser(
-        "view", help="Print formatted data."
-    )
+    
+    # VIEW
+    parser_view = subparsers.add_parser("view", help="Display the data in a formatted table.")
     parser_view.add_argument(
         "--max-rows", type=int, default=20,
-        help="(--max-rows) Maximum number of rows to display (default: 20)."
+        help="(--max-rows) Maximum rows to display (default: 20)."
     )
     parser_view.add_argument(
         "--max-cols", type=int, default=None,
-        help="(--max-cols) Maximum number of columns to display. Default: all columns."
+        help="(--max-cols) Maximum columns to display (default: all columns)."
     )
-
-    # --- Cut Operation ---
-    parser_cut = subparsers.add_parser(
-        "cut", help="Select columns. Required: -p."
-    )
+    
+    # CUT
+    parser_cut = subparsers.add_parser("cut", help="Cut/select columns. Required: -p.")
     parser_cut.add_argument(
         "-p", "--pattern", required=True,
-        help="(-p, --pattern) String or regular expression pattern to match against column headers/indices."
+        help="(-p, --pattern) String or regex pattern to match column names for selection."
     )
     parser_cut.add_argument(
         "--regex", action="store_true",
-        help="(--regex) Treat the pattern as a regular expression (default is literal string match)."
+        help="(--regex) Interpret the pattern as a regex (default is a literal match)."
     )
-
-    # --- View Header Operation ---
-    parser_viewheader = subparsers.add_parser(
-        "viewheader", help="List headers."
-    )
-
-    # --- row_insert Operation (new) ---
-    parser_row_insert = subparsers.add_parser(
-        "row_insert", help="Insert a new row at a specified 1-indexed position. Use -i 0 to insert as a header."
-    )
+    
+    # VIEWHEADER
+    parser_viewheader = subparsers.add_parser("viewheader", help="Display the header names and positions.")
+    
+    # ROW_INSERT
+    parser_row_insert = subparsers.add_parser("row_insert", help="Insert a new row at a specified 1-indexed position. Use -i 0 to insert as header.")
     parser_row_insert.add_argument(
         "-i", "--row-idx", type=int, default=0,
-        help="(-i, --row-idx) 1-indexed row position for the new row. Use 0 to insert as a header (default: 0)."
+        help="(-i, --row-idx) Row position (1-indexed) where the new row will be inserted. Use 0 to insert as header (default: 0)."
     )
     parser_row_insert.add_argument(
         "-v", "--values",
-        help="(-v, --values) Comma-separated values for the new row. Supports escape sequences. If -i 0 and not provided, generates generic 'col1', 'col2' etc."
+        help=("(-v, --values) Comma-separated list of values for the new row. Supports escape sequences. If -i 0 and not provided, "
+              "generic names like 'col1, col2, ...' are generated.")
     )
-    # Note: row_insert will generally not be low-memory compatible for row_idx > 0
-
-    # --- row_drop Operation (new) ---
-    parser_row_drop = subparsers.add_parser(
-        "row_drop", help="Delete one or more rows by their 1-indexed position. Use -i 0 to remove the first line (header/first data row)."
-    )
+    
+    # ROW_DROP
+    parser_row_drop = subparsers.add_parser("row_drop", help="Delete row(s) at a specified 1-indexed position. Use -i 0 to drop the header/first row.")
     parser_row_drop.add_argument(
         "-i", "--row-idx", type=int, required=True,
-        help="(-i, --row-idx) 1-indexed row position to drop. Use 0 to remove the first line (header/first data row)."
+        help="(-i, --row-idx) Row position (1-indexed) to drop. Use 0 to drop the header (first row)."
     )
-    # Note: row_drop will generally not be low-memory compatible
-
-
+    
     return parser
 
-# --- Operation Handler Functions ---
+# --------------------------
+# Operation Handler Functions
+# --------------------------
 def _handle_move(df, args, input_sep, is_header_present, row_idx_col_name):
-    from_col_0_idx = _parse_column_arg(args.from_col, df.columns, is_header_present, "--from-col")
-    to_col_0_idx_user = _parse_column_arg(args.to_col, df.columns, is_header_present, "--to-col")
-    to_col_0_idx = min(to_col_0_idx_user, df.shape[1])
-    _print_verbose(args, f"Moving column '{df.columns[from_col_0_idx]}' (0-indexed: {from_col_0_idx}) to position (0-indexed: {to_col_0_idx}).")
-    col_to_move_name = df.columns[from_col_0_idx]
-    col_to_move_data = df.pop(col_to_move_name)
-    df.insert(to_col_0_idx, col_to_move_name, col_to_move_data)
+    from_idx = _parse_column_arg(args.i, df.columns, is_header_present, "source column (-i)")
+    to_idx = _parse_column_arg(args.j, df.columns, is_header_present, "destination column (-j)")
+    if to_idx > df.shape[1]:
+        to_idx = df.shape[1]
+    _print_verbose(args, f"Moving column '{df.columns[from_idx]}' from index {from_idx} to {to_idx}.")
+    col_name = df.columns[from_idx]
+    data = df.pop(col_name)
+    df.insert(to_idx, col_name, data)
     return df
 
 def _handle_col_insert(df, args, input_sep, is_header_present, row_idx_col_name):
-    col_0_idx = _parse_column_arg(args.col_idx, df.columns, is_header_present, "--col-idx")
-    insert_value = codecs.decode(args.value, 'unicode_escape')
-    new_col_name = args.new_header
-    if is_header_present and new_col_name in df.columns:
-        original_new_col_name = new_col_name; i = 1
-        while f"{original_new_col_name}_{i}" in df.columns: i += 1
-        new_col_name = f"{original_new_col_name}_{i}"
-        _print_verbose(args, f"Header '{original_new_col_name}' already exists. Using unique header '{new_col_name}'.")
-    df.insert(col_0_idx, new_col_name, insert_value)
+    pos = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    value = codecs.decode(args.value, 'unicode_escape')
+    new_header = args.new_header
+    if is_header_present and new_header in df.columns:
+        new_header = get_unique_header(new_header, df)
+        _print_verbose(args, f"New header exists; using '{new_header}'.")
+    df.insert(pos, new_header, value)
     return df
 
 def _handle_col_drop(df, args, input_sep, is_header_present, row_idx_col_name):
-    cols_to_drop_0_idx = _parse_multiple_columns_arg(args.cols_to_drop, df.columns, is_header_present, "--cols-to-drop")
-    cols_to_drop_names = [df.columns[i] for i in cols_to_drop_0_idx]
-    _print_verbose(args, f"Dropping columns: {cols_to_drop_names} (0-indexed: {cols_to_drop_0_idx}).")
-    df = df.drop(columns=cols_to_drop_names)
+    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Dropping columns: {names}.")
+    df = df.drop(columns=names)
     return df
+#--
+def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
+    # Get the target column as a string series.
+    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    series = df.iloc[:, col].astype(str)
 
-def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name):
-    col_0_idx = _parse_column_arg(args.col_idx, df.columns, is_header_present, "--col-idx")
-    target_col_name = df.columns[col_0_idx]
-    target_col = df.iloc[:, col_0_idx].astype(str)
-    if args.pattern:
-        try: df = df[target_col.str.contains(args.pattern, regex=True, na=False)]
-        except re.error as e: raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
-    elif args.starts_with: df = df[target_col.str.startswith(args.starts_with, na=False)]
-    elif args.ends_with: df = df[target_col.str.endswith(args.ends_with, na=False)]
-    return df
+    if args.word_file:
+        try:
+            with open(args.word_file, 'r', encoding='utf-8') as f:
+                words = [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            raise ValueError(f"Error reading word file '{args.word_file}': {e}")
+        if not words:
+            sys.stderr.write(f"Warning: Word file '{args.word_file}' is empty. No filtering performed.\n")
+            return df, state
+
+        # Initialize the state for tracking matched words (if not already set)
+        if args.list_missing_words:
+            if state is None:
+                state = {}
+            if "matched_words" not in state:
+                state["matched_words"] = set()
+
+        # If --tokenize is provided, work on the first token (e.g. gene name).
+        if args.tokenize:
+            tokens = series.str.split('.', n=1).str[0]
+            if args.substring_match:
+                mask = tokens.apply(lambda token: any(word in token for word in words))
+                if args.list_missing_words:
+                    # Accumulate matched words from this chunk.
+                    chunk_matches = {w for token in tokens.dropna() for w in words if w in token}
+                    state["matched_words"].update(chunk_matches)
+            else:
+                mask = tokens.isin(words)
+                if args.list_missing_words:
+                    # For exact matching, simply add the intersection.
+                    state["matched_words"].update(set(tokens.dropna().unique()).intersection(words))
+        else:
+            # Build regex pattern (full word matching by default using word boundaries)
+            if args.substring_match:
+                pattern = "(" + "|".join(map(re.escape, words)) + ")"
+            else:
+                pattern = r"\b(?:" + "|".join(map(re.escape, words)) + r")\b"
+            mask = series.str.contains(pattern, regex=True, na=False)
+            if args.list_missing_words:
+                chunk_matches = set()
+                try:
+                    for text in series.dropna():
+                        found = re.findall(pattern, text)
+                        chunk_matches.update(found)
+                except re.error as e:
+                    raise ValueError(f"Error processing regex pattern '{pattern}': {e}")
+                state["matched_words"].update(chunk_matches)
+        df = df[~mask] if args.invert else df[mask]
+
+    elif args.pattern:
+        try:
+            mask = series.str.contains(args.pattern, regex=True, na=False)
+        except re.error as e:
+            raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
+        df = df[~mask] if args.invert else df[mask]
+
+    elif args.starts_with:
+        mask = series.str.startswith(args.starts_with, na=False)
+        df = df[~mask] if args.invert else df[mask]
+
+    elif args.ends_with:
+        mask = series.str.endswith(args.ends_with, na=False)
+        df = df[~mask] if args.invert else df[mask]
+
+    return df, state
+
+#--
 
 def _handle_split(df, args, input_sep, is_header_present, row_idx_col_name):
-    col_0_idx = _parse_column_arg(args.col_idx, df.columns, is_header_present, "--col-idx")
-    delimiter = codecs.decode(args.delimiter, 'unicode_escape')
-    original_col_name = df.columns[col_0_idx]
-    _print_verbose(args, f"Splitting column '{original_col_name}' by delimiter {delimiter!r}.")
-    split_cols_df = df.iloc[:, col_0_idx].astype(str).str.split(delimiter, expand=True).fillna('')
-    new_split_headers = []
-    for i in range(split_cols_df.shape[1]):
-        base_header = f"{args.new_header_prefix}_{i + 1}"
-        if is_header_present:
-            potential_header = f"{original_col_name}_{base_header}"
-            if potential_header not in df.columns: new_split_header = potential_header
-            else:
-                j = 1
-                while f"{original_col_name}_{base_header}_{j}" in df.columns: j += 1
-                new_split_header = f"{original_col_name}_{base_header}_{j}"
-        else: new_split_header = base_header
-        new_split_headers.append(new_split_header)
-    split_cols_df.columns = new_split_headers
-    _print_verbose(args, f"New split column headers: {new_split_headers}.")
-    df = df.drop(columns=[original_col_name])
-    df = pd.concat([df.iloc[:, :col_0_idx], split_cols_df, df.iloc[:, col_0_idx:]], axis=1)
+    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    delim = codecs.decode(args.delimiter, 'unicode_escape')
+    original = df.columns[col]
+    _print_verbose(args, f"Splitting column '{original}' with delimiter {delim!r}.")
+    split_df = df.iloc[:, col].astype(str).str.split(delim, expand=True).fillna('')
+    new_headers = []
+    for i in range(split_df.shape[1]):
+        candidate = f"{original}_{args.new_header_prefix}_{i+1}"
+        new_headers.append(get_unique_header(candidate, df) if is_header_present else f"{args.new_header_prefix}_{i+1}")
+    split_df.columns = new_headers
+    _print_verbose(args, f"New split headers: {new_headers}.")
+    df = df.drop(columns=[original])
+    left = df.iloc[:, :col]
+    right = df.iloc[:, col:]
+    df = pd.concat([left, split_df, right], axis=1)
     return df
 
 def _handle_join(df, args, input_sep, is_header_present, row_idx_col_name):
-    cols_to_join_0_idx = _parse_multiple_columns_arg(args.cols_to_join, df.columns, is_header_present, "--cols-to-join")
-    if not cols_to_join_0_idx: raise ValueError("Error: No columns specified for join operation.")
-    delimiter = codecs.decode(args.delimiter, 'unicode_escape')
-    cols_to_join_names = [df.columns[i] for i in cols_to_join_0_idx]
-    _print_verbose(args, f"Joining columns: {cols_to_join_names} with delimiter {delimiter!r}.")
-    joined_col_data = df.iloc[:, cols_to_join_0_idx[0]].astype(str)
-    for i in range(1, len(cols_to_join_0_idx)):
-        joined_col_data = joined_col_data + delimiter + df.iloc[:, cols_to_join_0_idx[i]].astype(str)
-    if args.target_col_idx is not None:
-        insert_loc_0_idx = _parse_column_arg(str(args.target_col_idx), df.columns, is_header_present, "--target-col-idx")
-    else: insert_loc_0_idx = cols_to_join_0_idx[0]
-    new_col_name = args.new_header
-    if is_header_present and new_col_name in df.columns:
-        original_new_col_name = new_col_name; i = 1
-        while f"{original_new_col_name}_{i}" in df.columns: i += 1
-        new_col_name = f"{original_new_col_name}_{i}"
-        _print_verbose(args, f"Header '{original_new_col_name}' already exists. Using unique header '{new_col_name}'.")
-    cols_to_drop_names = [df.columns[idx] for idx in sorted(cols_to_join_0_idx, reverse=True)]
-    df = df.drop(columns=cols_to_drop_names)
-    df.insert(min(insert_loc_0_idx, df.shape[1]), new_col_name, joined_col_data.reset_index(drop=True))
-    _print_verbose(args, f"Joined column '{new_col_name}' inserted at position (0-indexed: {min(insert_loc_0_idx, df.shape[1])}).")
+    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    if not indices:
+        raise ValueError("Error: No columns specified for join operation.")
+    delim = codecs.decode(args.delimiter, 'unicode_escape')
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Joining columns {names} with delimiter {delim!r}.")
+    joined = df.iloc[:, indices[0]].astype(str)
+    for i in range(1, len(indices)):
+        joined += delim + df.iloc[:, indices[i]].astype(str)
+    if args.target_col_idx:
+        target = _parse_column_arg(args.target_col_idx, df.columns, is_header_present, "target column (-j)")
+    else:
+        target = indices[0]
+    new_header = args.new_header
+    if is_header_present:
+        new_header = get_unique_header(new_header, df)
+    drop_names = [df.columns[i] for i in sorted(indices, reverse=True)]
+    df = df.drop(columns=drop_names)
+    pos = min(target, df.shape[1])
+    df.insert(pos, new_header, joined.reset_index(drop=True))
+    _print_verbose(args, f"Inserted joined column '{new_header}' at index {pos}.")
     return df
 
 def _handle_tr(df, args, input_sep, is_header_present, row_idx_col_name):
-    col_0_idx = _parse_column_arg(args.col_idx, df.columns, is_header_present, "--col-idx")
-    original_col_name = df.columns[col_0_idx]
-    translated_col_data = None
+    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    original = df.columns[col]
+    translated = None
     if args.dict_file:
-        translation_map = {}
+        mapping = {}
         try:
-            _print_verbose(args, f"Loading translation map from '{args.dict_file}' using separator {input_sep!r}.")
+            _print_verbose(args, f"Loading translation mapping from '{args.dict_file}' using separator {input_sep!r}.")
             with open(args.dict_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
-                    if not line: continue
+                    if not line:
+                        continue
                     parts = line.split(input_sep, 1)
-                    if len(parts) == 2: translation_map[parts[0]] = parts[1]
-                    else: sys.stderr.write(f"Warning: Skipping malformed line in dictionary file: '{line}'\n")
-            _print_verbose(args, f"Loaded {len(translation_map)} entries for translation.")
-        except FileNotFoundError: raise FileNotFoundError(f"Error: Dictionary file not found: '{args.dict_file}'")
-        except Exception as e: raise RuntimeError(f"Error reading dictionary file: {e}")
-        translated_col_data = df.iloc[:, col_0_idx].astype(str).apply(lambda x: translation_map.get(x, x))
+                    if len(parts) == 2:
+                        mapping[parts[0]] = parts[1]
+                    else:
+                        sys.stderr.write(f"Warning: Skipping malformed line: '{line}'.\n")
+            _print_verbose(args, f"Loaded {len(mapping)} translations.")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Error: Dictionary file not found: '{args.dict_file}'")
+        except Exception as e:
+            raise RuntimeError(f"Error reading dictionary file: {e}")
+        translated = df.iloc[:, col].astype(str).apply(lambda x: mapping.get(x, x))
     elif args.from_val:
-        if not args.to_val: raise ValueError("Error: --to-val must be specified when using --from-val.")
-        from_val_decoded = codecs.decode(args.from_val, 'unicode_escape')
-        to_val_decoded = codecs.decode(args.to_val, 'unicode_escape')
-        _print_verbose(args, f"Translating values in column '{original_col_name}' from '{from_val_decoded}' to '{to_val_decoded}' {'(regex)' if args.regex else '(literal)'}.")
-        try: translated_col_data = df.iloc[:, col_0_idx].astype(str).str.replace(from_val_decoded, to_val_decoded, regex=args.regex, n=-1)
-        except re.error as e: raise ValueError(f"Error: Invalid regex pattern '{from_val_decoded}': {e}")
-    else: raise ValueError("Error: For tr operation, either -d/--dict-file or --from-val (with --to-val) must be specified.")
+        if not args.to_val:
+            raise ValueError("Error: Must specify --to-val when using --from-val.")
+        from_val = codecs.decode(args.from_val, 'unicode_escape')
+        to_val = codecs.decode(args.to_val, 'unicode_escape')
+        _print_verbose(args, f"Translating values in '{original}' from '{from_val}' to '{to_val}' ({'regex' if args.regex else 'literal'}).")
+        try:
+            translated = df.iloc[:, col].astype(str).str.replace(from_val, to_val, regex=args.regex)
+        except re.error as e:
+            raise ValueError(f"Error: Invalid regex '{from_val}': {e}")
+    else:
+        raise ValueError("Error: For tr operation, specify either a dict file (-d) or both --from-val and --to-val.")
     
     if args.in_place:
-        _print_verbose(args, f"Translating column '{original_col_name}' in place.")
-        df.iloc[:, col_0_idx] = translated_col_data
+        df.iloc[:, col] = translated
     else:
-        if args.new_header.startswith("_"): new_col_name = str(original_col_name) + args.new_header
-        else: new_col_name = args.new_header
-        if is_header_present and new_col_name in df.columns:
-            original_new_col_name = new_col_name; i = 1
-            while f"{original_new_col_name}_{i}" in df.columns: i += 1
-            new_col_name = f"{original_new_col_name}_{i}"
-            _print_verbose(args, f"Header '{original_new_col_name}' already exists. Using unique header '{new_col_name}'.")
-        df.insert(col_0_idx + 1, new_col_name, translated_col_data.reset_index(drop=True))
-        _print_verbose(args, f"Translated column '{new_col_name}' inserted after '{original_col_name}'.")
+        if args.new_header.startswith("_"):
+            new_header = str(original) + args.new_header
+        else:
+            new_header = args.new_header
+        if is_header_present:
+            new_header = get_unique_header(new_header, df)
+        df.insert(col+1, new_header, translated.reset_index(drop=True))
+        _print_verbose(args, f"Inserted translated column '{new_header}' after '{original}'.")
     return df
 
+def extract_numeric(value, pattern, suffix_map=None):
+    """
+    Extracts a numeric value from 'value' using 'pattern'. If 'suffix_map' is provided,
+    the entire match is passed to _parse_size_value.
+    """
+    if not isinstance(value, str):
+        return None
+    m = re.search(pattern, value)
+    if m:
+        if suffix_map:
+            return _parse_size_value(m.group(0), suffix_map)
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    return None
+
 def _parse_size_value(value, suffix_map):
-    match = re.match(r"(\d+(\.\d+)?)([KMGTP])?", value, re.IGNORECASE)
-    if not match:
+    """
+    Parses a string of the form (number)(optional suffix) and returns its numeric value.
+    """
+    m = re.match(r"(\d+(?:\.\d+)?)([KMGTP])?", value, re.IGNORECASE)
+    if not m:
         try:
             return float(value)
         except ValueError:
-            return None # Cannot parse
-    num = float(match.group(1))
-    suffix = match.group(3)
+            return None
+    num = float(m.group(1))
+    suffix = m.group(2)
     if suffix:
-        suffix_key = suffix.upper()
-        if suffix_key in suffix_map:
-            return num * suffix_map[suffix_key]
+        key = suffix.upper()
+        if key in suffix_map:
+            return num * suffix_map[key]
         else:
-            return None # Unknown suffix
+            return None
     return num
 
 def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
-    cols_0_idx = _parse_multiple_columns_arg(args.by, df.columns, is_header_present, "--by")
-    sort_by_columns = [df.columns[idx] for idx in cols_0_idx]
+    cols = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "column (-i)")
+    if len(cols) != 1:
+        raise ValueError("Error: Sort operation with -p requires a single column specified by -i.")
+    target = df.columns[cols[0]]
     
-    if args.pattern:
-        if len(cols_0_idx) > 1:
-            raise ValueError("Error: --pattern for numeric sorting can only be used with a single column specified by --by.")
-        
-        target_col_name = sort_by_columns[0]
-        
+    # If --expand-scientific is active and no --pattern is provided, set a default pattern.
+    if args.expand_scientific and not args.pattern:
+        args.pattern = r"(\d+(?:\.\d+)?)([KMGTP])?"
+    
+    # Determine which suffix mapping to use.
+    if args.expand_scientific:
+        suffix_map = {'K': 1000, 'M': 1000000, 'G': 1000000000, 'T': 1000000000000, 'P': 1000000000000000}
+    elif args.suffix_map:
         suffix_map = {}
-        if args.suffix_map:
-            for pair in args.suffix_map.split(','):
-                if ':' in pair:
-                    key, val = pair.split(':', 1)
-                    try:
-                        suffix_map[key.strip().upper()] = float(val.strip())
-                    except ValueError:
-                        raise ValueError(f"Error: Invalid suffix-map format. '{pair}' is not a valid key:value pair with numeric value.")
-                else:
-                    raise ValueError(f"Error: Invalid suffix-map format. '{pair}' should be in 'KEY:VALUE' format.")
-        
-        _print_verbose(args, f"Sorting column '{target_col_name}' numerically using pattern '{args.pattern}' and suffix map {suffix_map}.")
-
-        # Create a temporary column for sorting numeric values
-        temp_sort_col_name = f"_temp_numeric_sort_{target_col_name}"
-        
-        def extract_and_convert(val):
-            if not isinstance(val, str):
-                return None
-            match = re.search(args.pattern, val)
-            if match and match.group(1):
-                numeric_part = match.group(1)
-                full_match = match.group(0) # Get the full string that matched the pattern
-                suffix = None
-                
-                
-                if suffix_map:
-                   
-                    return _parse_size_value(full_match, suffix_map)
-                else:
-                    try:
-                        return float(numeric_part)
-                    except ValueError:
-                        return None # Cannot convert to float
-            return None # No match or empty capture
-
-        df[temp_sort_col_name] = df[target_col_name].astype(str).apply(extract_and_convert)
-        # Sort by the temporary numeric column, then by the original column for tie-breaking/stability
-        df = df.sort_values(by=[temp_sort_col_name, target_col_name], ascending=[not args.desc, True], kind='stable')
-        df = df.drop(columns=[temp_sort_col_name]) # Drop the temporary column
+        for pair in args.suffix_map.split(','):
+            if ':' in pair:
+                key, val = pair.split(':', 1)
+                try:
+                    suffix_map[key.strip().upper()] = float(val.strip())
+                except ValueError:
+                    raise ValueError(f"Error: Invalid suffix-map entry '{pair}'.")
+            else:
+                raise ValueError(f"Error: Suffix-map entry '{pair}' is malformed. Expected KEY:VALUE.")
     else:
-        _print_verbose(args, f"Sorting by columns: {sort_by_columns} in {'descending' if args.desc else 'ascending'} order.")
-        df = df.sort_values(by=sort_by_columns, ascending=not args.desc, kind='stable')
+        suffix_map = {}
+    
+    _print_verbose(args, f"Sorting column '{target}' using pattern '{args.pattern}' with suffix map {suffix_map}.")
+
+    # Create a temporary column name for the numeric key.
+    temp_numeric = f"_temp_numeric_sort_{target}"
+    
+    # Define a debug function that strips the value, converts it, and prints the conversion details.
+    def debug_conversion(val):
+        original_val = str(val)
+        cleaned_val = original_val.strip()
+        numeric_val = extract_numeric(cleaned_val, args.pattern, suffix_map)
+        _print_verbose(args, f"DEBUG: Original '{original_val}' => Cleaned '{cleaned_val}' => Numeric {numeric_val}")
+        return numeric_val
+    
+    # Apply the debug_conversion function so that we can observe the conversion for each cell.
+    df[temp_numeric] = df[target].astype(str).apply(debug_conversion)
+    
+    # Prepare sort key list.
+    sort_keys = [temp_numeric]
+    if args.pattern_string:
+        temp_secondary = f"_temp_string_sort_{target}"
+        def extract_secondary(val):
+            m = re.search(args.pattern_string, val)
+            return m.group(1) if m else val
+        df[temp_secondary] = df[target].astype(str).apply(extract_secondary)
+        sort_keys.append(temp_secondary)
+    sort_keys.append(target)  # For tie-breaking using the original value.
+    
+    ascending = not args.desc
+    df = df.sort_values(by=sort_keys, ascending=ascending, kind='stable')
+    
+    # Remove temporary columns.
+    drop_cols = [temp_numeric]
+    if args.pattern_string:
+        drop_cols.append(temp_secondary)
+    df.drop(columns=drop_cols, inplace=True)
     return df
 
 def _handle_cleanup_header(df, args, input_sep, is_header_present, row_idx_col_name):
     if not is_header_present:
-        sys.stderr.write("Warning: No header specified (--header=None). 'cleanup_header' has no effect.\n")
-        _print_verbose(args, "Skipping cleanup_header as no header is present.")
+        sys.stderr.write("Warning: '--header=None' provided. 'cleanup_header' will have no effect.\n")
+        _print_verbose(args, "Skipping cleanup_header (no header).")
     else:
-        original_headers = list(df.columns)
+        original = list(df.columns)
         df.columns = [_clean_string_for_header_and_data(col) for col in df.columns]
-        _print_verbose(args, f"Header cleaned. Original: {original_headers}, New: {list(df.columns)}")
+        _print_verbose(args, f"Cleaned header. Before: {original}  After: {list(df.columns)}")
     return df
 
 def _handle_cleanup_values(df, args, input_sep, is_header_present, row_idx_col_name):
-    cols_to_clean_0_idx = _parse_multiple_columns_arg(args.cols_to_clean, df.columns, is_header_present, "--cols-to-clean")
-    cols_to_clean_names = [df.columns[i] for i in cols_to_clean_0_idx]
-    _print_verbose(args, f"Cleaning data in columns: {cols_to_clean_names}.")
-    for col_0_idx in cols_to_clean_0_idx:
-        df.iloc[:, col_0_idx] = df.iloc[:, col_0_idx].apply(_clean_string_for_header_and_data)
+    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Cleaning values in columns: {names}.")
+    for i in indices:
+        df.iloc[:, i] = df.iloc[:, i].apply(_clean_string_for_header_and_data)
     return df
 
 def _handle_prefix_add(df, args, input_sep, is_header_present, row_idx_col_name):
-    cols_to_prefix_0_idx = _parse_multiple_columns_arg(args.cols_to_prefix, df.columns, is_header_present, "--cols-to-prefix")
-    prefix_string = codecs.decode(args.string, 'unicode_escape')
-    prefix_delimiter = codecs.decode(args.delimiter, 'unicode_escape')
-    cols_to_prefix_names = [df.columns[i] for i in cols_to_prefix_0_idx]
-    _print_verbose(args, f"Adding prefix '{prefix_string}' with delimiter {prefix_delimiter!r} to columns: {cols_to_prefix_names}.")
-    for col_0_idx in cols_to_prefix_0_idx:
-        df.iloc[:, col_0_idx] = df.iloc[:, col_0_idx].astype(str).apply(lambda x: f"{prefix_string}{prefix_delimiter}{x}")
+    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    prefix = codecs.decode(args.string, 'unicode_escape')
+    delim = codecs.decode(args.delimiter, 'unicode_escape')
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Adding prefix '{prefix}' with delimiter '{delim}' to columns: {names}.")
+    for i in indices:
+        df.iloc[:, i] = df.iloc[:, i].astype(str).apply(lambda x: f"{prefix}{delim}{x}")
     return df
 
 def _handle_value_counts(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    if state is None: # Full memory mode or first chunk
-        value_counts_counts = Counter()
-    else: # Subsequent chunks
-        value_counts_counts = state
-
-    cols_to_count_0_idx = _parse_multiple_columns_arg(args.cols_to_count, df.columns, is_header_present, "--cols-to-count")
-    if not cols_to_count_0_idx: raise ValueError("Error: No columns specified for value_counts operation.")
-    
-    for col_0_idx in cols_to_count_0_idx:
-        chunk_col_name = df.columns[col_0_idx] # df.columns is correct for the current chunk
-        if chunk_col_name in df.columns: # Redundant check but safe if columns were manipulated
-            col_data = df[chunk_col_name].astype(str)
-            value_counts_counts.update(col_data)
-        else:
-            sys.stderr.write(f"Warning: Column '{col_0_idx+1}' ('{chunk_col_name}') not found in chunk. Skipping.\n")
-    
-    # If this is the last chunk or full memory mode, print summary and exit
-    if df.index.stop == CHUNK_SIZE or state is None: # This heuristic for last chunk is imperfect, better to use an 'is_last_chunk' flag
-        sorted_summary = sorted(value_counts_counts.items(), key=lambda item: item[1], reverse=True)
-        summary_df = pd.DataFrame(sorted_summary[:args.top_n], columns=['Value', 'Count'])
-        sys.stdout.write(f"--- Summary (Top {args.top_n}) ---\n")
-        sys.stdout.write(summary_df.to_string(index=False, header=True) + '\n')
-        sys.exit(0) # Value counts prints directly and exits
-
-    return df, value_counts_counts # Return df and updated state for next chunk
+    if state is None:
+        counter = Counter()
+    else:
+        counter = state
+    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    if not indices:
+        raise ValueError("Error: No columns specified for value_counts.")
+    for i in indices:
+        col = df.columns[i]
+        counter.update(df[col].astype(str))
+    sorted_counts = sorted(counter.items(), key=lambda x: x[1], reverse=True)
+    summary = pd.DataFrame(sorted_counts[:args.top_n], columns=['Value', 'Count'])
+    sys.stdout.write(f"--- Top {args.top_n} Values ---\n")
+    sys.stdout.write(summary.to_string(index=False, header=True) + '\n')
+    sys.exit(0)
 
 def _handle_strip(df, args, input_sep, is_header_present, row_idx_col_name):
-    col_0_idx = _parse_column_arg(args.col_idx, df.columns, is_header_present, "--col-idx")
-    original_col_name = df.columns[col_0_idx]
-    try: stripped_col_data = df.iloc[:, col_0_idx].astype(str).str.replace(args.pattern, '', regex=True)
-    except re.error as e: raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
-
+    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    original = df.columns[col]
+    try:
+        new_series = df.iloc[:, col].astype(str).str.replace(args.pattern, '', regex=True)
+    except re.error as e:
+        raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
     if args.in_place:
-        _print_verbose(args, f"Stripping pattern '{args.pattern}' from column '{original_col_name}' in place.")
-        df.iloc[:, col_0_idx] = stripped_col_data
+        df.iloc[:, col] = new_series
     else:
-        _print_verbose(args, f"Stripping pattern '{args.pattern}' from column '{original_col_name}', adding a new column.")
-        if args.new_header.startswith("_"): new_col_name = str(original_col_name) + args.new_header
-        else: new_col_name = args.new_header
-        if is_header_present and new_col_name in df.columns:
-            original_new_col_name = new_col_name; i = 1
-            while f"{original_new_col_name}_{i}" in df.columns: i += 1
-            new_col_name = f"{original_new_col_name}_{i}"
-            _print_verbose(args, f"Header '{original_new_col_name}' already exists. Using unique header '{new_col_name}'.")
-        df.insert(col_0_idx + 1, new_col_name, stripped_col_data.reset_index(drop=True))
-        _print_verbose(args, f"Stripped column '{new_col_name}' inserted after '{original_col_name}'.")
+        if args.new_header.startswith("_"):
+            new_header = str(original) + args.new_header
+        else:
+            new_header = args.new_header
+        if is_header_present:
+            new_header = get_unique_header(new_header, df)
+        df.insert(col+1, new_header, new_series.reset_index(drop=True))
+        _print_verbose(args, f"Inserted stripped column '{new_header}' after '{original}'.")
     return df
 
 def _handle_numeric_map(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    # State for chunked mode: (numeric_map_unique_values, numeric_map_next_id)
     if state is None:
-        numeric_map_unique_values = {}
-        numeric_map_next_id = 1
+        mapping = {}
+        next_id = 1
     else:
-        numeric_map_unique_values, numeric_map_next_id = state
+        mapping, next_id = state
+    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    original = df.columns[col]
+    _print_verbose(args, f"Mapping unique values in '{original}' to numeric identifiers.")
+    new_header = args.new_header if args.new_header else f"numeric_map_of_{original}"
+    if is_header_present:
+        new_header = get_unique_header(new_header, df)
+    def mapper(x):
+        nonlocal next_id
+        if x not in mapping:
+            mapping[x] = next_id
+            next_id += 1
+        return mapping[x]
+    mapped = df.iloc[:, col].astype(str).apply(mapper)
+    df.insert(col+1, new_header, mapped)
+    return df, (mapping, next_id)
 
-    col_0_idx = _parse_column_arg(args.col_idx, df.columns, is_header_present, "--col-idx")
-    original_col_name = df.columns[col_0_idx]
-    _print_verbose(args, f"Mapping unique values in column '{original_col_name}' to numeric values.")
-    
-    if args.new_header: new_col_name = args.new_header
-    else: new_col_name = f"numeric_map_of_{str(original_col_name)}"
-    if is_header_present and new_col_name in df.columns and state is None: # Only check for uniqueness once in full memory or first chunk
-        original_new_col_name = new_col_name; i = 1
-        while f"{original_new_col_name}_{i}" in df.columns: i += 1
-        new_col_name = f"{original_new_col_name}_{i}"
-        _print_verbose(args, f"Header '{original_new_col_name}' already exists. Using unique header '{new_col_name}'.")
-
-    mapped_series = df.iloc[:, col_0_idx].astype(str).apply(
-        lambda x: numeric_map_unique_values.setdefault(x, numeric_map_next_id) or numeric_map_unique_values[x]
-    )
-    current_max_id = max(numeric_map_unique_values.values()) if numeric_map_unique_values else 0
-    if current_max_id >= numeric_map_next_id:
-        numeric_map_next_id = current_max_id + 1
-
-    df.insert(df.columns.get_loc(original_col_name) + 1, new_col_name, mapped_series)
-    _print_verbose(args, f"Numeric mapped column '{new_col_name}' inserted after '{original_col_name}'.")
-    
-    # For full memory, print mapping at the end (or pass to main to print after all chunks)
-    # The `main` loop should ideally collect this and print if it's the last chunk.
-    # For now, it's handled by returning the state for chunked, and handled outside for full.
-    
-    return df, (numeric_map_unique_values, numeric_map_next_id) # Return df and updated state for chunked mode
-
-def _handle_regex_capture(df, args, input_sep, is_header_present, row_idx_col_name):
-    col_0_idx = _parse_column_arg(args.col_idx, df.columns, is_header_present, "--col-idx")
-    
-    if not is_header_present:
-        base_col_name = f"captured_column_{col_0_idx + 1}"
-    else:
-        base_col_name = df.columns[col_0_idx]
-    
+def _handle_regex_capture(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content=None):
+    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    base = df.columns[col] if is_header_present else f"captured_column_{col+1}"
     if args.new_header.startswith("_"):
-        new_col_name = str(base_col_name) + args.new_header
+        new_header = str(base) + args.new_header
     else:
-        new_col_name = args.new_header
-    
-    if is_header_present and new_col_name in df.columns:
-        original_new_col_name = new_col_name
-        i = 1
-        while f"{original_new_col_name}_{i}" in df.columns:
-            i += 1
-        new_col_name = f"{original_new_col_name}_{i}"
-        _print_verbose(args, f"Header '{original_new_col_name}' already exists. Using unique header '{new_col_name}'.")
-
-    _print_verbose(args, f"Applying regex '{args.pattern}' to column '{base_col_name}', creating new column '{new_col_name}'.")
+        new_header = args.new_header
+    if is_header_present:
+        new_header = get_unique_header(new_header, df)
+        _print_verbose(args, f"Using unique header: {new_header}.")
+    _print_verbose(args, f"Capturing groups using regex '{args.pattern}' on column '{base}'.")
     try:
-        captured_data = df.iloc[:, col_0_idx].astype(str).apply(
-            lambda x: ';'.join(re.findall(args.pattern, x))
-        )
+        captured = df.iloc[:, col].astype(str).apply(lambda x: ';'.join(re.findall(args.pattern, x)))
     except re.error as e:
         raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
-
-    df.insert(len(df.columns), new_col_name, captured_data.reset_index(drop=True))
+    df.insert(len(df.columns), new_header, captured.reset_index(drop=True))
     return df
 
 def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content=None):
-    _print_verbose(args, f"Viewing data. Max rows: {args.max_rows}, Max cols: {args.max_cols}.")
+    _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
     pd.set_option('display.max_rows', args.max_rows)
     pd.set_option('display.max_columns', args.max_cols)
     pd.set_option('display.width', None)
-    pd.set_option('display.colheader_justify','left')
-    display_df = df.copy()
-    if row_idx_col_name and row_idx_col_name in display_df.columns:
-        cols = [row_idx_col_name] + [col for col in display_df.columns if col != row_idx_col_name]
-        display_df = display_df[cols]
-        _print_verbose(args, f"Moved row index column '{row_idx_col_name}' to the front for display.")
-    sys.stdout.write(display_df.to_string(index=True, header=is_header_present) + '\n')
+    pd.set_option('display.colheader_justify', 'left')
+    disp = df.copy()
+    if row_idx_col_name and row_idx_col_name in disp.columns:
+        cols = [row_idx_col_name] + [col for col in disp.columns if col != row_idx_col_name]
+        disp = disp[cols]
+        _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
+    sys.stdout.write(disp.to_string(index=True, header=is_header_present) + '\n')
     pd.reset_option('display.max_rows')
     pd.reset_option('display.max_columns')
     pd.reset_option('display.width')
     pd.reset_option('display.colheader_justify')
-    sys.exit(0) # View prints directly and exits
+    sys.exit(0)
 
 def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
     pattern = args.pattern
-    _print_verbose(args, f"Cutting columns with pattern '{pattern}' (regex: {args.regex}).")
-    selected_columns = []
-    for col_name in df.columns:
+    _print_verbose(args, f"Selecting columns matching pattern '{pattern}' (regex: {args.regex}).")
+    selected = []
+    for col in df.columns:
         if args.regex:
             try:
-                if re.search(pattern, str(col_name)): selected_columns.append(col_name)
-            except re.error as e: raise ValueError(f"Error: Invalid regex pattern '{pattern}': {e}")
+                if re.search(pattern, str(col)):
+                    selected.append(col)
+            except re.error as e:
+                raise ValueError(f"Error: Invalid regex '{pattern}': {e}")
         else:
-            if pattern in str(col_name): selected_columns.append(col_name)
-    if row_idx_col_name and row_idx_col_name in df.columns and row_idx_col_name not in selected_columns:
-        selected_columns = [row_idx_col_name] + selected_columns
-        _print_verbose(args, f"Included specified row index column '{row_idx_col_name}' in cut output.")
-    if not selected_columns:
-        sys.stderr.write(f"Warning: No columns matched the pattern '{pattern}'. Outputting empty data.\n")
+            if pattern in str(col):
+                selected.append(col)
+    if row_idx_col_name and row_idx_col_name in df.columns and row_idx_col_name not in selected:
+        selected = [row_idx_col_name] + selected
+        _print_verbose(args, f"Including row-index column '{row_idx_col_name}' in the output.")
+    if not selected:
+        sys.stderr.write(f"Warning: No columns matched pattern '{pattern}'. Output will be empty.\n")
         df = pd.DataFrame(columns=[])
     else:
-        df = df[selected_columns]
-        _print_verbose(args, f"Selected columns: {selected_columns}.")
+        df = df[selected]
+        _print_verbose(args, f"Columns selected: {selected}.")
     return df
 
 def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content):
-    _print_verbose(args, "Listing headers and their 1-indexed positions.")
-    header_output = []
-    # If df is empty but has columns (e.g., from an input with only a header)
-    if df.empty and not df.columns.empty:
-        for i, col_name in enumerate(df.columns):
-            header_output.append(f"{i+1}\t{col_name}")
+    _print_verbose(args, "Listing header names with 1-indexed positions.")
+    out_lines = []
+    if df.empty and df.columns.size:
+        for i, col in enumerate(df.columns):
+            out_lines.append(f"{i+1}\t{col}")
     elif not df.empty:
-        current_columns_list = list(df.columns)
-        if not is_header_present and raw_first_line_content: # If no header, and we have raw first line
-            first_row_values = raw_first_line_content 
-            
-            for i, col_value in enumerate(first_row_values):
-                col_display_name = col_value if pd.notna(col_value) else f"Column_{i+1}"
-                indicator = " (Row Index)" if row_idx_col_name and current_columns_list[i] == row_idx_col_name else ""
-                header_output.append(f"{i+1}\t{col_display_name}{indicator}")
-        else: # Either header is present, or df is not empty and raw_first_line_content is not available (e.g., chunked)
-            for i, col_name in enumerate(current_columns_list):
-                indicator = " (Row Index)" if row_idx_col_name and col_name == row_idx_col_name else ""
-                header_output.append(f"{i+1}\t{col_name}{indicator}")
-    
-    if not header_output and is_header_present: # Only warn if header was expected but none found
-        sys.stderr.write("No columns found to display. The input might be empty or malformed.\n")
+        cols = list(df.columns)
+        if not is_header_present and raw_first_line_content:
+            for i, val in enumerate(raw_first_line_content):
+                indicator = " (Row Index)" if row_idx_col_name and cols[i] == row_idx_col_name else ""
+                out_lines.append(f"{i+1}\t{val}{indicator}")
+        else:
+            for i, col in enumerate(cols):
+                indicator = " (Row Index)" if row_idx_col_name and col == row_idx_col_name else ""
+                out_lines.append(f"{i+1}\t{col}{indicator}")
+    if not out_lines and is_header_present:
+        sys.stderr.write("No headers found. The input might be empty or malformed.\n")
     else:
-        sys.stdout.write("\n".join(header_output) + '\n')
+        sys.stdout.write("\n".join(out_lines) + '\n')
     sys.exit(0)
 
 def _handle_row_insert(df, args, input_sep, is_header_present, row_idx_col_name):
-    # This block is for row_insert when it's NOT the low-memory optimized -i 0 case.
-    # So, it's either not lowmem, or row_idx > 0.
-    # args.row_idx is 1-indexed, convert to 0-indexed for pandas
-    insert_idx_0_based = args.row_idx - 1 
-
-    # Determine values for the new row
-    new_row_values = []
+    insert_pos = args.row_idx - 1  # 0-indexed
     if args.values:
-        new_row_values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')]
-    elif df.empty: # Empty input, but need to infer columns from values for first row.
-        sys.stderr.write("Error: Cannot insert row into empty table without explicit values to determine column count.\n")
+        values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')]
+    elif df.empty:
+        sys.stderr.write("Error: Cannot insert row into an empty table without explicit values.\n")
         sys.exit(1)
-    elif not args.values: # Inserting into non-empty data without values
-        num_cols = df.shape[1]
-        new_row_values = [f"col{i+1}" for i in range(num_cols)]
-        _print_verbose(args, f"Generated generic column names for new row: {new_row_values}")
-    
-    # Ensure new_row_values matches DataFrame columns (or can infer if df is empty)
-    num_target_cols = len(df.columns)
-    
-    if len(new_row_values) > num_target_cols:
-        new_row_values = new_row_values[:num_target_cols]
-        _print_verbose(args, f"Truncated new row values to match column count ({num_target_cols}).")
-    elif len(new_row_values) < num_target_cols:
-        new_row_values.extend([''] * (num_target_cols - len(new_row_values)))
-        _print_verbose(args, f"Padded new row values with empty strings to match column count ({num_target_cols}).")
-
-
-    new_row_df = pd.DataFrame([new_row_values], columns=df.columns)
-    
-    if insert_idx_0_based >= len(df): # Inserting at or beyond the end
-        df = pd.concat([df, new_row_df], ignore_index=True)
-    else: # Inserting in the middle
-        df_before = df.iloc[:insert_idx_0_based]
-        df_after = df.iloc[insert_idx_0_based:]
-        df = pd.concat([df_before, new_row_df, df_after], ignore_index=True)
-
-    _print_verbose(args, f"Inserted row at 1-indexed position {args.row_idx}. New DataFrame shape: {df.shape}")
+    else:
+        values = [f"col{i+1}" for i in range(df.shape[1])]
+        _print_verbose(args, f"Generated default row values: {values}")
+    if len(values) > df.shape[1]:
+        values = values[:df.shape[1]]
+        _print_verbose(args, "Truncated row values to match column count.")
+    elif len(values) < df.shape[1]:
+        values.extend([''] * (df.shape[1] - len(values)))
+        _print_verbose(args, "Padded row values to match column count.")
+    new_row = pd.DataFrame([values], columns=df.columns)
+    if insert_pos >= len(df):
+        df = pd.concat([df, new_row], ignore_index=True)
+    else:
+        df = pd.concat([df.iloc[:insert_pos], new_row, df.iloc[insert_pos:]], ignore_index=True)
+    _print_verbose(args, f"Inserted row at position {args.row_idx}. New shape: {df.shape}.")
     return df
 
 def _handle_row_drop(df, args, input_sep, is_header_present, row_idx_col_name):
-    # This operation is explicitly not low-memory compatible (checked earlier).
-    # args.row_idx is 1-indexed, convert to 0-indexed for pandas
-    drop_idx_0_based = args.row_idx - 1
-
-    if drop_idx_0_based < 0 or drop_idx_0_based >= len(df):
-        raise IndexError(f"Error: Row index {args.row_idx} is out of bounds. Table has {len(df)} rows.\n")
-    
-    df = df.drop(df.index[drop_idx_0_based]).reset_index(drop=True)
-    _print_verbose(args, f"Dropped row at 1-indexed position {args.row_idx}. New DataFrame shape: {df.shape}")
+    drop_pos = args.row_idx - 1
+    if drop_pos < 0 or drop_pos >= len(df):
+        raise IndexError(f"Error: Row index {args.row_idx} is out of bounds. Table has {len(df)} rows.")
+    df = df.drop(df.index[drop_pos]).reset_index(drop=True)
+    _print_verbose(args, f"Dropped row at position {args.row_idx}. New shape: {df.shape}.")
     return df
 
-
-# Dispatch table for operations
+# --------------------------
+# Dispatch Table
+# --------------------------
 OPERATION_HANDLERS = {
     "move": _handle_move,
     "col_insert": _handle_col_insert,
@@ -928,292 +953,216 @@ OPERATION_HANDLERS = {
     "cut": _handle_cut,
     "viewheader": _handle_viewheader,
     "row_insert": _handle_row_insert,
-    "row_drop": _handle_drop,
+    "row_drop": _handle_row_drop,
 }
 
-# --- Input/Output Functions ---
-def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked_pandas_processing):
-    """
-    Reads input data into a Pandas DataFrame or a TextFileReader.
-    Returns (DataFrame/iterator, raw_first_line_content_list_if_no_header).
-    """
-    df = None
-    raw_first_line_content = [] # Used only if header is explicitly None
-    
-    if use_chunked_pandas_processing:
+# --------------------------
+# Input/Output Functions
+# --------------------------
+def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
+    """Reads input into a DataFrame or a generator for chunked processing."""
+    raw_first_line = []
+    if use_chunked:
         try:
-            text_file_reader = pd.read_csv(
-                sys.stdin, sep=input_sep, header=header_param, dtype=str,
-                chunksize=CHUNK_SIZE, iterator=True
-            )
-            first_chunk_df = next(text_file_reader)
-            
-            if first_chunk_df.empty and args.operation not in ["viewheader", "view", "value_counts", "regex_capture"]:
-                sys.stderr.write(f"Error: Input data is empty. '{args.operation}' requires input data. Exiting.\n")
+            reader = pd.read_csv(sys.stdin, sep=input_sep, header=header_param, dtype=str,
+                                 chunksize=CHUNK_SIZE, iterator=True)
+            first_chunk = next(reader)
+            if first_chunk.empty and args.operation not in ["viewheader", "view", "value_counts", "regex_capture"]:
+                sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires non-empty data.\n")
                 sys.exit(1)
-            
-            # Re-adjust columns for subsequent chunks if header was None
             if not is_header_present:
-                first_chunk_df.columns = pd.Index(range(first_chunk_df.shape[1]))
-
-            # Create a generator that yields the first chunk and then the rest
-            def chunk_generator():
-                yield first_chunk_df
-                yield from text_file_reader
-            
-            return chunk_generator(), raw_first_line_content # Return iterator
+                first_chunk.columns = pd.Index(range(first_chunk.shape[1]))
+            def generator():
+                yield first_chunk
+                for chunk in reader:
+                    yield chunk
+            return generator(), raw_first_line
         except StopIteration:
-            sys.stderr.write(f"Warning: Input data is empty. Cannot perform '{args.operation}'. Exiting.\n")
+            sys.stderr.write(f"Warning: Input is empty. Cannot perform '{args.operation}'.\n")
             sys.exit(0)
         except pd.errors.EmptyDataError:
-            sys.stderr.write(f"Warning: Input data is empty. Cannot perform '{args.operation}'. Exiting.\n")
+            sys.stderr.write(f"Warning: Input is empty. Cannot perform '{args.operation}'.\n")
             sys.exit(0)
         except Exception as e:
-            sys.stderr.write(f"Error reading initial chunk for low-memory processing: {e}\n")
+            sys.stderr.write(f"Error reading input in low-memory mode: {e}\n")
             sys.exit(1)
-    else: # Full memory load
+    else:
         try:
-            # Read all content to check if empty or get first line if no header
-            csv_content = sys.stdin.read() 
-            
-            if not csv_content.strip() and args.operation not in ["viewheader", "view", "value_counts"]:
-                sys.stderr.write(f"Error: Input data is empty. '{args.operation}' requires input data. Exiting.\n")
+            content = sys.stdin.read()
+            if not content.strip() and args.operation not in ["viewheader", "view", "value_counts"]:
+                sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires data.\n")
                 sys.exit(1)
-            
-            if not csv_content.strip(): # Still empty after checking against allowed ops
-                df = pd.DataFrame(columns=[] if is_header_present else []) # Empty DF, with or without header
-                return df, raw_first_line_content # Return empty DF
-
-            # Read the entire content into a StringIO for pandas
-            csv_data = StringIO(csv_content)
-            
-            # If header is explicitly None, capture the first line before pandas processes it
+            if not content.strip():
+                return pd.DataFrame(columns=[] if is_header_present else []), raw_first_line
+            csv_io = StringIO(content)
             if not is_header_present:
-                current_pos = csv_data.tell()
-                first_line = csv_data.readline().strip()
-                raw_first_line_content = first_line.split(input_sep) if first_line else []
-                csv_data.seek(current_pos) # Reset for pandas
-            
-            df = pd.read_csv(csv_data, sep=input_sep, header=header_param, dtype=str)
-            return df, raw_first_line_content
+                pos = csv_io.tell()
+                first_line = csv_io.readline().strip()
+                raw_first_line = first_line.split(input_sep) if first_line else []
+                csv_io.seek(pos)
+            df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str)
+            return df, raw_first_line
         except pd.errors.EmptyDataError:
             df = pd.DataFrame(columns=[] if is_header_present else [])
-            _print_verbose(args, "Input data is empty. Proceeding with an empty DataFrame.")
-            return df, raw_first_line_content
+            _print_verbose(args, "Empty input; proceeding with an empty DataFrame.")
+            return df, raw_first_line
         except Exception as e:
             sys.stderr.write(f"Error reading input data: {e}\n")
             sys.exit(1)
 
-def _write_output_data(df_or_chunk, args, input_sep, is_header_present, output_header_printed):
-    """
-    Writes DataFrame or chunk to stdout. Manages header printing for chunked output.
-    Returns updated output_header_printed status.
-    """
+def _write_output_data(data, args, input_sep, is_header_present, header_printed):
+    """Writes the processed DataFrame (or chunk) to stdout."""
     try:
         if args.operation in ["view", "viewheader", "value_counts"]:
-            # These operations handle their own output and sys.exit()
-            return output_header_printed # No change needed
-        
-        if isinstance(df_or_chunk, pd.DataFrame): # Full DataFrame mode
-            df_or_chunk.to_csv(sys.stdout, sep=input_sep, index=False, header=is_header_present, encoding='utf-8')
-            return True # Header printed (or not, but it's done)
-        
-        # Chunked mode
-        if not output_header_printed and is_header_present:
-            df_or_chunk.to_csv(sys.stdout, sep=input_sep, index=False, header=True, encoding='utf-8')
-            return True # Header printed for first chunk
+            return header_printed
+        if isinstance(data, pd.DataFrame):
+            data.to_csv(sys.stdout, sep=input_sep, index=False, header=is_header_present, encoding='utf-8')
+            return True
+        if not header_printed and is_header_present:
+            data.to_csv(sys.stdout, sep=input_sep, index=False, header=True, encoding='utf-8')
+            return True
         else:
-            df_or_chunk.to_csv(sys.stdout, sep=input_sep, index=False, header=False, encoding='utf-8')
-            return output_header_printed # Status remains the same
+            data.to_csv(sys.stdout, sep=input_sep, index=False, header=False, encoding='utf-8')
+            return header_printed
     except BrokenPipeError:
-        # Expected when piping to utilities like 'head'
         pass
     except Exception as e:
         sys.stderr.write(f"Error writing output: {e}\n")
         sys.exit(1)
-    return output_header_printed # In case of other errors, maintain status
+    return header_printed
 
-
+# --------------------------
+# Main Processing Function
+# --------------------------
 def main():
     parser = _setup_arg_parser()
     args = parser.parse_args()
-
-    # If no operation is specified (e.g., just `field_manipulate`), print help
     if not hasattr(args, 'operation') or args.operation is None:
         parser.print_help()
         sys.exit(0)
-
-    # Prepare the command string for printing in _execute_operation
-    command_str_for_log = [sys.argv[0]]
-    if args.operation: command_str_for_log.append(args.operation)
-    if hasattr(args, 'col_idx') and args.col_idx is not None: command_str_for_log.extend(['-i', str(args.col_idx)])
-    if hasattr(args, 'pattern') and args.pattern is not None: command_str_for_log.extend(['-p', f"'{args.pattern}'"])
-    if hasattr(args, 'values') and args.values is not None: command_str_for_log.extend(['-v', f"'{args.values}'"])
-    if hasattr(args, 'from_col') and args.from_col is not None: command_str_for_log.extend(['--from-col', str(args.from_col)])
-    if hasattr(args, 'to_col') and args.to_col is not None: command_str_for_log.extend(['--to-col', str(args.to_col)])
-    if hasattr(args, 'cols_to_drop') and args.cols_to_drop is not None: command_str_for_log.extend(['-i', f"'{args.cols_to_drop}'"]) # For col_drop
-    if hasattr(args, 'cols_to_join') and args.cols_to_join is not None: command_str_for_log.extend(['-i', f"'{args.cols_to_join}'"]) # For join
-    if hasattr(args, 'by') and args.by is not None: command_str_for_log.extend(['-i', f"'{args.by}'"])
-
-
+    
+    # Build a command string for logging.
+    cmd = [sys.argv[0]]
+    if args.operation:
+        cmd.append(args.operation)
+    if hasattr(args, 'i') and args.i:
+        cmd.extend(["-i", str(args.i)])
+    if hasattr(args, 'pattern') and args.pattern:
+        cmd.extend(["-p", f"'{args.pattern}'"])
+    if hasattr(args, 'values') and args.values:
+        cmd.extend(["-v", f"'{args.values}'"])
+    if hasattr(args, 'j') and args.j:
+        cmd.extend(["-j", str(args.j)])
+    sys.stderr.write("# Processing: " + " ".join(cmd) + "\n")
+    
     input_sep = codecs.decode(args.sep, 'unicode_escape')
     header_param = 0 if args.header == "0" else None
     is_header_present = (args.header == "0")
-
-    # Check for incompatible operations with lowmem
+    
     if args.lowmem and args.operation == "sort":
-        sys.stderr.write("Error: 'sort' operation cannot be performed in low-memory mode (--lowmem) as it requires loading all data.\n")
+        sys.stderr.write("Error: 'sort' operation cannot be performed in low-memory mode (--lowmem).\n")
         sys.exit(1)
     
-    # Identify row_insert -i 0 and row_drop -i 0 as special low-memory cases
-    is_lowmem_optimized_row_op = False
-    if args.operation == "row_insert" and args.row_idx == 0:
-        is_lowmem_optimized_row_op = True
-    elif args.operation == "row_drop" and args.row_idx == 0:
-        is_lowmem_optimized_row_op = True
-
-    if args.lowmem and args.operation in ["row_insert", "row_drop"] and not is_lowmem_optimized_row_op:
-        sys.stderr.write(f"Error: '{args.operation}' operation is not compatible with low-memory mode (--lowmem) except for 'row_insert -i 0' and 'row_drop -i 0'. It requires loading all data.\n")
+    lowmem_ops = ["value_counts", "numeric_map", "grep", "tr", "strip", "prefix_add", "cleanup_values", "regex_capture"]
+    use_chunked = args.lowmem and args.operation in lowmem_ops
+    
+    # Special handling for low-memory row operations (only for row_idx 0)
+    lowmem_row = False
+    if args.operation in ["row_insert", "row_drop"]:
+        if args.row_idx == 0:
+            lowmem_row = True
+    if args.lowmem and args.operation in ["row_insert", "row_drop"] and not lowmem_row:
+        sys.stderr.write(f"Error: '{args.operation}' is not compatible with --lowmem except for row_idx 0.\n")
         sys.exit(1)
-
-
-    lowmem_supported_ops_pandas_chunk = ["value_counts", "numeric_map", "grep", "tr", "strip", "prefix_add", "cleanup_values", "regex_capture"]
-    use_chunked_pandas_processing = args.lowmem and args.operation in lowmem_supported_ops_pandas_chunk
-
-    # --- Execute low-memory optimized row operations directly ---
-    if is_lowmem_optimized_row_op:
-        sys.stderr.write(f"# Processing: {' '.join(command_str_for_log)}\n")
+    
+    if lowmem_row:
+        sys.stderr.write("# Processing: " + " ".join(cmd) + "\n")
         if args.operation == "row_insert":
-            _print_verbose(args, "Performing low-memory optimized 'row_insert -i 0'.")
-            first_line_of_input = sys.stdin.readline().strip()
-            num_cols = 0
-            if first_line_of_input:
-                num_cols = len(first_line_of_input.split(input_sep))
-            elif args.values:
-                num_cols = len(args.values.split(','))
-            else:
-                num_cols = 1 
-            new_header_values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')] if args.values else [f"col{i+1}" for i in range(num_cols)]
-            if len(new_header_values) > num_cols: new_header_values = new_header_values[:num_cols]
-            elif len(new_header_values) < num_cols: new_header_values.extend([''] * (num_cols - len(new_header_values)))
-            try:
-                sys.stdout.write(input_sep.join(new_header_values) + '\n')
-                if first_line_of_input: sys.stdout.write(first_line_of_input + '\n')
-                for line in sys.stdin: sys.stdout.write(line)
-            except BrokenPipeError: pass
+            _print_verbose(args, "Low-memory row_insert (header insertion).")
+            first_line = sys.stdin.readline().strip()
+            count = len(first_line.split(input_sep)) if first_line else (len(args.values.split(',')) if args.values else 1)
+            values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')] if args.values else [f"col{i+1}" for i in range(count)]
+            if len(values) > count:
+                values = values[:count]
+            elif len(values) < count:
+                values.extend([''] * (count - len(values)))
+            sys.stdout.write(input_sep.join(values) + '\n')
+            if first_line:
+                sys.stdout.write(first_line + '\n')
+            for line in sys.stdin:
+                sys.stdout.write(line)
             sys.exit(0)
         elif args.operation == "row_drop":
-            _print_verbose(args, "Performing low-memory optimized 'row_drop -i 0'.")
+            _print_verbose(args, "Low-memory row_drop (dropping first row).")
             try:
                 first_line = sys.stdin.readline()
-                if not first_line.strip(): sys.stderr.write("Warning: Attempted to drop first line, but input stream might be empty or first line was blank.\n")
-                for line in sys.stdin: sys.stdout.write(line)
-            except BrokenPipeError: pass
+                if not first_line.strip():
+                    sys.stderr.write("Warning: Input may be empty when dropping first row.\n")
+                for line in sys.stdin:
+                    sys.stdout.write(line)
+            except BrokenPipeError:
+                pass
             sys.exit(0)
     
-    # --- For all other operations (either full-memory or chunked Pandas processing) ---
-    sys.stderr.write(f"# Processing: {' '.join(command_str_for_log)}\n")
-    df_or_chunks, raw_first_line_content = _read_input_data(args, input_sep, header_param, is_header_present, use_chunked_pandas_processing)
+    df_or_chunks, raw_first_line = _read_input_data(args, input_sep, header_param, is_header_present, use_chunked)
     
-    row_idx_col_name = None
+    row_idx_col = None
     if args.row_index:
-        # Determine row_idx_col_name from the first chunk or the full DataFrame
-        if use_chunked_pandas_processing:
-          
+        if use_chunked:
             try:
-                peek_chunk = next(df_or_chunks)
-                initial_df_columns = peek_chunk.columns
-                # Re-adjust columns if header was None (as _read_input_data does this for chunks)
-                if not is_header_present:
-                    initial_df_columns = pd.Index(range(peek_chunk.shape[1]))
-                row_idx_0_based = _parse_column_arg(args.row_index, initial_df_columns, is_header_present, "--row-index")
-                row_idx_col_name = initial_df_columns[row_idx_0_based]
-                # Now, create a new generator including the peeked chunk
-                df_or_chunks = (item for item in [peek_chunk] + list(df_or_chunks)) # Re-wrap for chunked
-                _print_verbose(args, f"Row index column specified: '{row_idx_col_name}' (0-indexed: {row_idx_0_based}) from first chunk.")
+                first_chunk = next(df_or_chunks)
+                cols = first_chunk.columns if is_header_present else pd.Index(range(first_chunk.shape[1]))
+                idx = _parse_column_arg(args.row_index, cols, is_header_present, "row-index")
+                row_idx_col = cols[idx]
+                df_or_chunks = (item for item in [first_chunk] + list(df_or_chunks))
+                _print_verbose(args, f"Row-index column: '{row_idx_col}' (index {idx}).")
             except StopIteration:
-                sys.stderr.write("Error: Input is empty, cannot determine --row-index column.\n")
+                sys.stderr.write("Error: Input is empty; cannot determine row-index column.\n")
                 sys.exit(1)
-        else: # Full DataFrame mode
+        else:
             if isinstance(df_or_chunks, pd.DataFrame):
-                row_idx_0_based = _parse_column_arg(args.row_index, df_or_chunks.columns, is_header_present, "--row-index")
-                row_idx_col_name = df_or_chunks.columns[row_idx_0_based]
-                _print_verbose(args, f"Row index column specified: '{row_idx_col_name}' (0-indexed: {row_idx_0_based}).")
+                idx = _parse_column_arg(args.row_index, df_or_chunks.columns, is_header_present, "row-index")
+                row_idx_col = df_or_chunks.columns[idx]
+                _print_verbose(args, f"Row-index column: '{row_idx_col}' (index {idx}).")
             else:
-                sys.stderr.write(f"Error: Cannot determine --row-index column for '{args.operation}' in current mode.\n")
+                sys.stderr.write("Error: Cannot determine row-index column in current mode.\n")
                 sys.exit(1)
+    
+    #-
+    header_printed = False
+    op_state = {}  # will accumulate state (for example, matched words when using grep)
+    if use_chunked:
+        for chunk in df_or_chunks:
+            # (Ensure proper column names for the chunk)
+            if is_header_present and not chunk.empty:
+                chunk.columns = chunk.columns
+            elif not is_header_present:
+                chunk.columns = pd.Index(range(chunk.shape[1]))
+            # Process this chunk (for grep, _handle_grep returns both df and state)
+            processed, op_state["grep"] = _handle_grep(
+                chunk, args, input_sep, is_header_present, row_idx_col, state=op_state.get("grep", {})
+            )
+            if row_idx_col and row_idx_col in processed.columns:
+                cols_order = [row_idx_col] + [col for col in processed.columns if col != row_idx_col]
+                processed = processed[cols_order]
+            header_printed = _write_output_data(processed, args, input_sep, is_header_present, header_printed)
+        if args.word_file and args.list_missing_words:
+            with open(args.word_file, 'r', encoding='utf-8') as f:
+                word_list = [line.strip() for line in f if line.strip()]
+            matched = op_state.get("grep", {}).get("matched_words", set())
+            missing = set(word_list) - matched
+            sys.stderr.write("Words not seen in input: (n="+ str(len(missing))+") " + ", ".join(sorted(missing)) + "\n")
+    else:
+        processed_df, state = _handle_grep(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
+        if args.word_file and args.list_missing_words:
+            with open(args.word_file, 'r', encoding='utf-8') as f:
+                word_list = [line.strip() for line in f if line.strip()]
+            matched = state.get("matched_words", set()) if state else set()
+            missing = set(word_list) - matched
+            sys.stderr.write("Words not seen in input: " + ", ".join(sorted(missing)) + "\n")
+        _write_output_data(processed_df, args, input_sep, is_header_present, header_printed)
 
-
-    output_header_printed = False
-    operation_state = {} # To hold state for chunked operations like numeric_map
-
-    try:
-        if use_chunked_pandas_processing:
-            for chunk_df in df_or_chunks: # df_or_chunks is an iterator here
-                # Ensure chunk columns align with initial_df_columns for consistent parsing
-                if is_header_present and not chunk_df.empty and len(chunk_df.columns) == len(initial_df_columns):
-                    chunk_df.columns = initial_df_columns
-                elif not is_header_present:
-                    chunk_df.columns = pd.Index(range(chunk_df.shape[1]))
-
-                processed_chunk = chunk_df
-                # Handle operations that might return state (e.g., numeric_map, value_counts)
-                if args.operation in ["numeric_map", "value_counts"]:
-                    processed_chunk, operation_state[args.operation] = OPERATION_HANDLERS[args.operation](
-                        chunk_df, args, input_sep, is_header_present, row_idx_col_name,
-                        state=operation_state.get(args.operation) # Pass current state
-                    )
-                    if args.operation == "value_counts" and sys.exit.called: # Check if value_counts exited
-                        return
-                else:
-                    processed_chunk = OPERATION_HANDLERS[args.operation](processed_chunk, args, input_sep, is_header_present, row_idx_col_name)
-
-                # Reorder row index column if specified
-                if row_idx_col_name and row_idx_col_name in processed_chunk.columns:
-                    cols = [row_idx_col_name] + [col for col in processed_chunk.columns if col != row_idx_col_name]
-                    processed_chunk = processed_chunk[cols]
-
-                output_header_printed = _write_output_data(processed_chunk, args, input_sep, is_header_present, output_header_printed)
-            
-            # For chunked operations that need a final print/action after all chunks (e.g., value_counts if not exited yet)
-            if args.operation == "numeric_map" and operation_state.get('numeric_map'):
-                # Print the final mapping for numeric_map after all chunks are processed
-                numeric_map_unique_values, _ = operation_state['numeric_map']
-                _print_verbose(args, f"Final Mapping (Value -> Numeric ID):")
-                unique_values = sorted(numeric_map_unique_values.items(), key=lambda item: item[1])
-                for val, idx in unique_values:
-                    _print_verbose(args, f"  '{val}' -> {idx}")
-
-
-        else: # Full DataFrame processing
-            processed_df = df_or_chunks # df_or_chunks is a DataFrame here
-
-            # Handle operation execution
-            # Pass raw_first_line_content to viewheader as it needs it when no header is present
-            if args.operation in ["view", "viewheader"]:
-                OPERATION_HANDLERS[args.operation](processed_df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content=raw_first_line_content)
-            elif args.operation in ["numeric_map", "value_counts"]: # These return state for full DF
-                processed_df, _ = OPERATION_HANDLERS[args.operation](
-                    processed_df, args, input_sep, is_header_present, row_idx_col_name, state=None
-                )
-            else:
-                processed_df = OPERATION_HANDLERS[args.operation](processed_df, args, input_sep, is_header_present, row_idx_col_name)
-
-            # Reorder row index column if specified
-            if row_idx_col_name and row_idx_col_name in processed_df.columns:
-                cols = [row_idx_col_name] + [col for col in processed_df.columns if col != row_idx_col_name]
-                processed_df = processed_df[cols]
-                _print_verbose(args, f"Reordered final output to place row index column '{row_idx_col_name}' first.")
-
-            _write_output_data(processed_df, args, input_sep, is_header_present, output_header_printed) # output_header_printed will be False initially
-            
-    except (ValueError, IndexError, FileNotFoundError, RuntimeError) as e:
-        sys.stderr.write(f"{e}\n")
-        sys.exit(1)
-    except Exception as e:
-        sys.stderr.write(f"An unexpected error occurred during processing: {e}\n")
-        sys.exit(1)
-
+    #-
 
 if __name__ == "__main__":
     main()
