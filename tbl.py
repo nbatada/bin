@@ -73,7 +73,7 @@ def _setup_arg_parser():
         description="""A command-line tool for manipulating table fields.
 
 Usage:
-    field_manipulate.py [GLOBAL_OPTIONS] <operation> [OPERATION_SPECIFIC_OPTIONS]
+    tbl.py [GLOBAL_OPTIONS] <operation> [OPERATION_SPECIFIC_OPTIONS]
 
 Global Options affect how input is read and general script behavior.
 Operations perform specific data manipulations and have their own options.
@@ -620,33 +620,10 @@ def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
                 numeric_part = match.group(1)
                 full_match = match.group(0) # Get the full string that matched the pattern
                 suffix = None
-                # Attempt to find a suffix after the numeric part if the regex captures it
-                # This assumes the pattern covers the numeric part and optionally a suffix character at the end.
-                # If the pattern extracts only the number, we need to re-evaluate the full_match for suffix.
                 
-                # A more robust way: if pattern has a group for numeric value, and we need suffix from *outside* that group
-                # For `du -h` example: "101M", pattern `([0-9.]+)([KMGTP])?`
-                # If the pattern is `\b([0-9]+[\.]?[0-9]+?)[A-Z]`, the `[A-Z]` is outside group 1.
-                # So we need to match the original string again for the suffix, or ensure pattern captures it in a separate group.
-                
-                # Given the example `\b([0-9]+[\.]?[0-9]+?)[A-Z]`, the suffix is *not* in group 1.
-                # We need to extract the number and the suffix separately if the regex is designed this way.
-                
-                # Let's refine the extraction based on the provided example pattern.
-                # The pattern "\b([0-9]+[\.]?[0-9]+?)[A-Z]" captures the number in group 1.
-                # If there's an A-Z character *after* the captured group, it's the suffix.
-                
-                # We can modify `_parse_size_value` to take the full matched string for suffix parsing.
-                # Or, simplify the logic: if the pattern captures the number, apply suffix mapping.
-                
-                # Simplified approach: If a suffix map is given, assume the pattern extracts the numeric part,
-                # and we need to look for a suffix *immediately following* that numeric part in the original string.
-                # This requires parsing the *original* string, not just the regex capture.
                 
                 if suffix_map:
-                    # Try to extract the number and the suffix from the *original* string based on the pattern match
-                    # This requires the regex to effectively find the number and then we look for the suffix.
-                    # This custom parsing function handles both the number and the suffix.
+                   
                     return _parse_size_value(full_match, suffix_map)
                 else:
                     try:
@@ -1142,13 +1119,8 @@ def main():
     if args.row_index:
         # Determine row_idx_col_name from the first chunk or the full DataFrame
         if use_chunked_pandas_processing:
-            # Need to peek at the first chunk's columns without consuming it
-            # This is complex with a generator, so we'll rely on the operation handlers
-            # to do the initial column parsing or pass the first chunk's columns
-            # For simplicity, will try to get it from the first chunk if it exists.
+          
             try:
-                # To get initial columns for row_index from a generator:
-                # Read the first chunk, get its columns, then chain it back.
                 peek_chunk = next(df_or_chunks)
                 initial_df_columns = peek_chunk.columns
                 # Re-adjust columns if header was None (as _read_input_data does this for chunks)
