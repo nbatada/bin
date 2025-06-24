@@ -3,14 +3,12 @@
 import sys
 import argparse
 import ast
-import inspect
 import difflib
 import os
 import re
 
 # ---------------------------
-# Existing functions here...
-# (get_functions_from_code, remove_comments, _align_assignments, etc.)
+# Existing helper functions
 
 def get_functions_from_code(code):
     tree = ast.parse(code)
@@ -31,7 +29,8 @@ def remove_comments(source):
                 in_multiline_comment = False
                 continue
             else:
-                if stripped_line.count('"""') % 2 != 0 or stripped_line.count("'''") % 2 != 0:
+                if (stripped_line.count('"""') % 2 != 0 or 
+                    stripped_line.count("'''") % 2 != 0):
                     in_multiline_comment = True
                     continue
         if in_multiline_comment:
@@ -47,7 +46,7 @@ def _align_assignments(code_segment):
     Aligns assignment operators (including compound assignments) for lines that 
     are simple one-line assignments. Lines that begin with 'def' or 'class' are ignored.
     """
-    # Order matters: longer compound operators must come before shorter ones.
+    # Longer compound operators before shorter ones.
     assignment_pattern = re.compile(
         r'^(?!\s*(?:def|class)\b)(\s*)(.+?)\s*(\*\*=|//=|>>=|<<=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=)\s*(.+)$'
     )
@@ -82,153 +81,15 @@ def get_code_from_input(args):
     else:
         return sys.stdin.read()
 
-def list_functions(args):
-    code = get_code_from_input(args)
-    functions = get_functions_from_code(code)
-    if functions:
-        print("Available functions:")
-        for name in sorted(functions.keys()):
-            print(f"- {name}")
-    else:
-        print("No functions found.", file=sys.stderr)
-
-def view_function(args):
-    code = get_code_from_input(args)
-    functions = get_functions_from_code(code)
-
-    if not args.function_name:
-        list_functions(args)
-        return
-
-    if args.function_name in functions:
-        func_code = functions[args.function_name]
-
-        if args.clean_format:
-            func_code = remove_comments(func_code)
-            func_code = _align_assignments(func_code)
-        print(func_code)
-    else:
-        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
-
-def remove_function(args):
-    code = get_code_from_input(args)
-    functions = get_functions_from_code(code)
-    if args.function_name not in functions:
-        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
-        return
-
-    tree = ast.parse(code)
-    new_nodes = []
-    for node in tree.body:
-        if not (isinstance(node, ast.FunctionDef) and node.name == args.function_name):
-            new_nodes.append(ast.unparse(node))
-    sys.stdout.write("\n".join(new_nodes))
-
-def add_function(args):
-    original_code = get_code_from_input(args)
-    with open(args.file_to_add, 'r') as f:
-        new_function_code = f.read()
-
-    if args.after:
-        if args.after not in get_functions_from_code(original_code):
-            print(f"Function '{args.after}' not found to add after.", file=sys.stderr)
-            return
-
-        lines = original_code.splitlines()
-        new_lines = []
-        added = False
-        for line in lines:
-            new_lines.append(line)
-            if f"def {args.after}" in line:
-                indentation = len(line) - len(line.lstrip())
-                new_function_lines = new_function_code.splitlines()
-                for i, func_line in enumerate(new_function_lines):
-                    if i == 0:
-                        new_lines.append(func_line)
-                    else:
-                        new_lines.append(" " * indentation + func_line)
-                added = True
-        sys.stdout.write("\n".join(new_lines))
-
-    elif args.before:
-        if args.before not in get_functions_from_code(original_code):
-            print(f"Function '{args.before}' not found to add before.", file=sys.stderr)
-            return
-
-        lines = original_code.splitlines()
-        new_lines = []
-        added = False
-        for line in lines:
-            if f"def {args.before}" in line and not added:
-                indentation = len(line) - len(line.lstrip())
-                new_function_lines = new_function_code.splitlines()
-                for i, func_line in enumerate(new_function_lines):
-                    if i == 0:
-                        new_lines.append(func_line)
-                    else:
-                        new_lines.append(" " * indentation + func_line)
-                added = True
-            new_lines.append(line)
-        sys.stdout.write("\n".join(new_lines))
-
-    else:
-        sys.stdout.write(new_function_code + "\n\n" + original_code)
-
-def diff_functions(args):
-    code = get_code_from_input(args)
-    functions = get_functions_from_code(code)
-
-    if args.function1 not in functions:
-        print(f"Function '{args.function1}' not found.", file=sys.stderr)
-        return
-    if args.function2 not in functions:
-        print(f"Function '{args.function2}' not found.", file=sys.stderr)
-        return
-
-    func1_code = functions[args.function1].splitlines()
-    func2_code = functions[args.function2].splitlines()
-
-    differ = difflib.UnifiedDiff()
-    diff = differ.compare(func1_code, func2_code, fromfile=args.function1, tofile=args.function2)
-    sys.stdout.writelines(diff)
-
-def list_dependencies(args):
-    code = get_code_from_input(args)
-    tree = ast.parse(code)
-
-    if args.function_name not in get_functions_from_code(code):
-        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
-        return
-
-    dependencies = set()
-
-    class CallVisitor(ast.NodeVisitor):
-        def visit_Call(self, node):
-            if isinstance(node.func, ast.Name):
-                func_name = node.func.id
-                if func_name in get_functions_from_code(code):
-                    dependencies.add(func_name)
-            self.generic_visit(node)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == args.function_name:
-            visitor = CallVisitor()
-            visitor.visit(node)
-            break
-
-    print("Dependencies:")
-    for dep in sorted(list(dependencies)):
-        print(f"- {dep}")
-
 # ---------------------------
-# New helper functions for unfolding/folding
+# New helper functions for unfolding/folding function headers
 
 def split_arguments(param_str):
     """
     Splits a function’s parameter string into individual arguments,
-    taking into account nested delimiters and string literals.
+    taking care of nested delimiters and quoted strings.
     """
-    args = []
+    args_list = []
     current = ""
     depth = 0
     in_string = False
@@ -258,95 +119,218 @@ def split_arguments(param_str):
         elif ch in ")]}":
             depth -= 1
         if ch == "," and depth == 0:
-            args.append(current.strip())
+            args_list.append(current.strip())
             current = ""
         else:
             current += ch
     if current.strip():
-        args.append(current.strip())
-    return args
+        args_list.append(current.strip())
+    return args_list
 
 def transform_func_header(header_str, unfold=True):
     """
     Transforms a function header.
-    If unfold==True, rewrites a (possibly single-line) function definition header
-    so that each argument appears on its own line.
-    If unfold==False (i.e. --fold was requested), then folds a multi-line header into one.
-    Expects header_str to include the final colon.
+    If unfold == True, rewrites a (possibly single-line) function definition header
+    so that each parameter appears on its own line.
+    If unfold == False, then folds a multi-line header into one.
+    Expects header_str to include the trailing colon.
     """
-    # Remove extra whitespace and the trailing colon.
     header_body = header_str.strip()
     if header_body.endswith(':'):
         header_body = header_body[:-1].rstrip()
-    # Find the opening and closing parentheses.
     i1 = header_body.find('(')
     i2 = header_body.rfind(')')
     if i1 == -1 or i2 == -1 or i2 < i1:
         return header_str  # Not a standard function header.
     prefix = header_body[:i1].rstrip()  # e.g. "def func"
     params_str = header_body[i1+1:i2].strip()
-    # Determine the base indentation.
     indent_match = re.match(r'^(\s*)', header_str)
     base_indent = indent_match.group(1) if indent_match else ""
     
     if unfold:
-        # If there are no parameters, return as is.
         if not params_str:
             return f"{prefix}():"
         params = split_arguments(params_str)
-        new_lines = []
-        new_lines.append(f"{prefix}(")
-        inner_indent = base_indent + "    "  # indent inner args by 4 spaces.
+        new_lines = [f"{prefix}("]
+        inner_indent = base_indent + "    "  # 4-space indent for parameters.
         for param in params:
             if param:
                 new_lines.append(f"{inner_indent}{param},")
         new_lines.append(f"{base_indent}):")
         return "\n".join(new_lines)
     else:
-        # Fold: collapse newlines and extra spaces.
+        # Fold: join parameters with a comma and space.
         if params_str:
             params = split_arguments(params_str)
-            new_params_str = ", ".join(param.strip() for param in params if param.strip())
+            new_params = ", ".join(p.strip() for p in params if p.strip())
         else:
-            new_params_str = ""
-        folded_header = f"{prefix}({new_params_str}):"
-        return base_indent + folded_header
+            new_params = ""
+        return f"{prefix}({new_params}):"
 
 def transform_function_definitions(code, target_func=None, unfold=True):
     """
-    Searches the given code for function definitions and transforms their header
-    by either unfolding (each parameter on a separate line) or folding (collapsing into one line).
-    If target_func is provided, only that function is transformed.
+    Traverses the given code; if target_func is provided only that function's header is transformed.
+    Otherwise, all function headers are transformed according to unfold:
+      - If unfold is True: arguments are split onto separate lines.
+      - If unfold is False: the header is folded into one line.
     """
-    # This pattern matches from the "def" at the start until the colon that ends the signature.
+    # Pattern captures from the "def" up to the colon ending the header.
     pattern = re.compile(r'(^\s*def\s+([A-Za-z_]\w*)\s*\(.*?\))\s*:', re.DOTALL | re.MULTILINE)
     
     def replacement(match):
         func_name = match.group(2)
-        original_header = match.group(0)  # includes the colon at the end.
+        orig_header = match.group(0)  # Header including the colon.
         if target_func and func_name != target_func:
-            return original_header
-        return transform_func_header(original_header, unfold)
+            return orig_header
+        return transform_func_header(orig_header, unfold)
     
-    new_code = pattern.sub(replacement, code)
-    return new_code
+    return pattern.sub(replacement, code)
 
 # ---------------------------
-# New command "unfold" (which also supports folding via --fold)
+# Other existing commands
 
-def transform_definitions(args):
+def list_functions(args):
     code = get_code_from_input(args)
-    # Optionally apply clean formatting first.
+    funcs = get_functions_from_code(code)
+    if funcs:
+        print("Available functions:")
+        for name in sorted(funcs.keys()):
+            print(f"- {name}")
+    else:
+        print("No functions found.", file=sys.stderr)
+
+def remove_function(args):
+    code = get_code_from_input(args)
+    funcs = get_functions_from_code(code)
+    if args.function_name not in funcs:
+        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
+        return
+    tree = ast.parse(code)
+    new_nodes = []
+    for node in tree.body:
+        if not (isinstance(node, ast.FunctionDef) and node.name == args.function_name):
+            new_nodes.append(ast.unparse(node))
+    sys.stdout.write("\n".join(new_nodes))
+
+def add_function(args):
+    original_code = get_code_from_input(args)
+    with open(args.file_to_add, 'r') as f:
+        new_function_code = f.read()
+    if args.after:
+        if args.after not in get_functions_from_code(original_code):
+            print(f"Function '{args.after}' not found to add after.", file=sys.stderr)
+            return
+        lines = original_code.splitlines()
+        new_lines = []
+        added = False
+        for line in lines:
+            new_lines.append(line)
+            if f"def {args.after}" in line:
+                indentation = len(line) - len(line.lstrip())
+                for i, func_line in enumerate(new_function_code.splitlines()):
+                    if i == 0:
+                        new_lines.append(func_line)
+                    else:
+                        new_lines.append(" " * indentation + func_line)
+                added = True
+        sys.stdout.write("\n".join(new_lines))
+    elif args.before:
+        if args.before not in get_functions_from_code(original_code):
+            print(f"Function '{args.before}' not found to add before.", file=sys.stderr)
+            return
+        lines = original_code.splitlines()
+        new_lines = []
+        added = False
+        for line in lines:
+            if f"def {args.before}" in line and not added:
+                indentation = len(line) - len(line.lstrip())
+                for i, func_line in enumerate(new_function_code.splitlines()):
+                    if i == 0:
+                        new_lines.append(func_line)
+                    else:
+                        new_lines.append(" " * indentation + func_line)
+                added = True
+            new_lines.append(line)
+        sys.stdout.write("\n".join(new_lines))
+    else:
+        sys.stdout.write(new_function_code + "\n\n" + original_code)
+
+def diff_functions(args):
+    code = get_code_from_input(args)
+    funcs = get_functions_from_code(code)
+    if args.function1 not in funcs:
+        print(f"Function '{args.function1}' not found.", file=sys.stderr)
+        return
+    if args.function2 not in funcs:
+        print(f"Function '{args.function2}' not found.", file=sys.stderr)
+        return
+    func1_code = funcs[args.function1].splitlines()
+    func2_code = funcs[args.function2].splitlines()
+    differ = difflib.UnifiedDiff()
+    diff = differ.compare(func1_code, func2_code, fromfile=args.function1, tofile=args.function2)
+    sys.stdout.writelines(diff)
+
+def list_dependencies(args):
+    code = get_code_from_input(args)
+    tree = ast.parse(code)
+    if args.function_name not in get_functions_from_code(code):
+        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
+        return
+    dependencies = set()
+    class CallVisitor(ast.NodeVisitor):
+        def visit_Call(self, node):
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                if func_name in get_functions_from_code(code):
+                    dependencies.add(func_name)
+            self.generic_visit(node)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == args.function_name:
+            CallVisitor().visit(node)
+            break
+    print("Dependencies:")
+    for dep in sorted(dependencies):
+        print(f"- {dep}")
+
+# ---------------------------
+# Updated view command (integrated header fold/unfold options)
+
+def view_function(args):
+    code = get_code_from_input(args)
+    # First, apply clean formatting if requested.
     if args.clean_format:
         code = remove_comments(code)
         code = _align_assignments(code)
-    target = args.function_name if hasattr(args, 'function_name') and args.function_name else None
-    # By default, we unfold (i.e. one argument per line). If --fold is provided, do the opposite.
-    new_code = transform_function_definitions(code, target_func=target, unfold=(not args.fold))
-    print(new_code)
+    # If header transformation is requested:
+    if args.unfold or args.fold:
+        if args.unfold and args.fold:
+            sys.stderr.write("Cannot specify both --unfold and --fold.\n")
+            sys.exit(1)
+        transform_flag = True if args.unfold else False
+        if args.function_name:
+            funcs = get_functions_from_code(code)
+            if args.function_name not in funcs:
+                sys.stderr.write(f"Function '{args.function_name}' not found.\n")
+                sys.exit(1)
+            func_code = funcs[args.function_name]
+            func_code = transform_function_definitions(func_code, target_func=args.function_name, unfold=transform_flag)
+        else:
+            # No specific function provided: transform all headers.
+            func_code = transform_function_definitions(code, target_func=None, unfold=transform_flag)
+        print(func_code)
+    else:
+        # Default behavior: if a function name is provided, show that function; otherwise list available functions.
+        funcs = get_functions_from_code(code)
+        if args.function_name:
+            if args.function_name in funcs:
+                print(funcs[args.function_name])
+            else:
+                sys.stderr.write(f"Function '{args.function_name}' not found.\n")
+        else:
+            list_functions(args)
 
 # ---------------------------
-# main() and command-line argument parsing
+# Main and command-line parsing
 
 def main():
     parser = argparse.ArgumentParser(description="A command-line tool to manage Python functions.", add_help=False)
@@ -357,9 +341,13 @@ def main():
     list_parser = subparsers.add_parser('list', help='List all functions in the input.')
     list_parser.set_defaults(func=list_functions)
 
-    view_parser = subparsers.add_parser('view', help='View a specific function. Lists all if no name. -c to remove comments and align assignments.')
-    view_parser.add_argument("function_name", nargs='?', help="Name of the function to view.")
-    view_parser.add_argument("-c", "--clean-format", action="store_true", help="Remove comments, align assignment operators, and (if desired) unfold the header.")
+    view_parser = subparsers.add_parser('view', help='View a specific function or full code. '
+                                                     'Use -c to clean (remove comments, align assignments) and '
+                                                     '--unfold/--fold to transform the header.')
+    view_parser.add_argument("function_name", nargs="?", help="Name of the function to view.")
+    view_parser.add_argument("-c", "--clean-format", action="store_true", help="Remove comments and align assignments.")
+    view_parser.add_argument("--unfold", action="store_true", help="Unfold the function header (one parameter per line).")
+    view_parser.add_argument("--fold", action="store_true", help="Fold the function header into a single line.")
     view_parser.set_defaults(func=view_function)
 
     remove_parser = subparsers.add_parser('remove', help='Remove a function.')
@@ -381,24 +369,10 @@ def main():
     deps_parser.add_argument("function_name", help="Name of the function to list dependencies for.")
     deps_parser.set_defaults(func=list_dependencies)
 
-    # New "unfold" command: by default, it unfolds (i.e. splits parameters onto separate lines).
-    # Use --fold to collapse a multi-line header into a single line.
-    unfold_parser = subparsers.add_parser('unfold', help='Reformat function definitions to improve header readability. '
-                                                         'By default, unfolds a single-line definition (one parameter per line). '
-                                                         'Use --fold to collapse an unfolded header into a single line. '
-                                                         'If a function name is provided, only that function is transformed.')
-    unfold_parser.add_argument("function_name", nargs="?", help="Name of the function to transform. "
-                                                                "If omitted, the transformation is applied to the entire code.")
-    unfold_parser.add_argument("--fold", action="store_true", help="Fold multi-line function definitions into one line.")
-    unfold_parser.add_argument("-c", "--clean-format", action="store_true", help="Also clean the code (remove comments & align assignments) before transforming.")
-    unfold_parser.set_defaults(func=transform_definitions)
-
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
         sys.exit(1)
-
     args = parser.parse_args()
-
     if hasattr(args, 'func'):
         args.func(args)
     else:
