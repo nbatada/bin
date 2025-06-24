@@ -37,46 +37,55 @@ def remove_comments(source):
             cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
 
-import re                                                                                                                                           
-def _align_assignments(code_segment):
-    """                                                                                                                                             
-    Aligns assignment operators ('=') for lines that (likely) are simple assignments.                                                               
-    This version uses a regex that matches a variable (or tuple of variables)                                                                       
-    on the left-hand side.                                                                                                                          
-    """
-    # This pattern matches lines that start with indentation and then a “word”                                                                      
-    # (or comma separated words) as the left-hand side. Modify if you need to cover                                                                 
-    # more complex assignments.                                                                                                                     
-    assignment_pattern = re.compile(r'^(\s*)([\w,]+)\s*=\s*(.+)$')
+##-
+import re
 
+def _align_assignments(code_segment):
+    """
+    Aligns assignment operators ('=') for lines that are simple one-line assignments.
+    This version uses a regex that captures any left-hand side (LHS) up to the '=' 
+    (allowing for attribute access, indices, etc.) while skipping function/class 
+    definitions.
+    """
+    # This pattern ignores lines starting with "def" or "class" and captures:
+    #   group(1): leading whitespace (indentation)
+    #   group(2): the left-hand side (non-greedily, up to the first " =")
+    #   group(3): everything after the '='
+    assignment_pattern = re.compile(r'^(?!\s*(?:def|class)\b)(\s*)(.+?)\s*=\s*(.+)$')
+    
     lines = code_segment.splitlines()
     aligned_output = []
-    group = []  # will accumulate tuples: (indent, lhs, rhs)                                                                                        
+    group = []  # will accumulate tuples: (indent, lhs, rhs)
 
     def process_group():
         nonlocal group, aligned_output
         if not group:
             return
-        # Compute maximum length of the left-hand side (for alignment)                                                                              
+        # Determine the maximum length of the LHS in this consecutive group.
         max_lhs = max(len(lhs) for indent, lhs, rhs in group)
         for indent, lhs, rhs in group:
-            padding = max_lhs - len(lhs)
-            new_line = f"{indent}{lhs}{' ' * padding} = {rhs}"
+            # Add one extra space so that even the longest lhs gets a trailing space.
+            padding = max_lhs - len(lhs) + 1
+            new_line = f"{indent}{lhs}{' ' * padding}= {rhs}"
             aligned_output.append(new_line)
-        group = []
+        group = []  # reset the group
 
     for line in lines:
+        # Try to match assignment lines that are not function or class definitions.
         match = assignment_pattern.match(line)
         if match:
-            indent, lhs, rhs = match.groups()
-            group.append((indent, lhs, rhs))
+            group.append(match.groups())
         else:
-            # When a non-assignment line is encountered, process any accumulated group.                                                             
+            # If a non-assignment line is encountered,
+            # flush any accumulated assignment group.
             process_group()
             aligned_output.append(line)
+    process_group()  # Flush any remaining group
 
-    process_group()  # Process any remaining group                                                                                                  
     return "\n".join(aligned_output)
+
+##-
+
 def get_code_from_input(args):
     if args.file:
         with open(args.file, 'r') as f:
