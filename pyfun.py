@@ -13,14 +13,16 @@ def get_functions_from_code(code):
     """
     Attempts to extract functions from code.
     First tries using AST; if that fails (e.g. because of a syntax error),
-    then falls back to a regex-based extraction (which returns only the header line).
+    then falls back to a regex-based extraction (which may only return the header).
     """
     try:
         tree = ast.parse(code)
     except SyntaxError:
         # Fallback using regex extraction (only header is returned)
-        pattern = re.compile(r'(^\s*def\s+([A-Za-z_]\w*)\s*\(.*?\))\s*:',
-                             re.DOTALL | re.MULTILINE)
+        pattern = re.compile(
+            r'(^\s*def\s+([A-Za-z_]\w*)\s*\(.*?\))\s*:',
+            re.DOTALL | re.MULTILINE
+        )
         functions = {}
         for match in pattern.finditer(code):
             func_name = match.group(2)
@@ -67,7 +69,7 @@ def _align_assignments(code_segment):
     )
     lines = code_segment.splitlines()
     aligned_output = []
-    group = []  # Accumulates tuples (indent, lhs, operator, rhs)
+    group = []  # Accumulates tuples (indent, lhs, operator, rhs).
 
     def process_group():
         nonlocal group, aligned_output
@@ -94,7 +96,6 @@ def get_code_from_input(args):
             return f.read()
     else:
         return sys.stdin.read()
-
 
 # ---------------------------
 # New helper functions for function header transformation
@@ -188,9 +189,10 @@ def transform_function_definitions(code, target_func=None, unfold=True):
     If target_func is provided, only that function's header is transformed;
     otherwise, all headers are transformed.
     """
-    # Pattern captures from the "def" up to the colon.
-    pattern = re.compile(r'(^\s*def\s+([A-Za-z_]\w*)\s*\(.*?\))\s*:',
-                         re.DOTALL | re.MULTILINE)
+    pattern = re.compile(
+        r'(^\s*def\s+([A-Za-z_]\w*)\s*\(.*?\))\s*:',
+        re.DOTALL | re.MULTILINE
+    )
     
     def replacement(match):
         func_name = match.group(2)
@@ -200,6 +202,20 @@ def transform_function_definitions(code, target_func=None, unfold=True):
         return transform_func_header(orig_header, unfold)
     
     return pattern.sub(replacement, code)
+
+def extract_function_regex(code, func_name):
+    """
+    Fallback extraction of a full function definition (header and body)
+    using regex. Assumes that the function body lines are indented.
+    """
+    pattern = re.compile(
+        rf'(^\s*def\s+{re.escape(func_name)}\s*\(.*?\):)(\n(?:\s+.+)*)',
+        re.MULTILINE
+    )
+    match = pattern.search(code)
+    if match:
+        return match.group(0)
+    return None
 
 
 # ---------------------------
@@ -221,19 +237,20 @@ def list_functions(args):
 
 def view_function(args):
     code = get_code_from_input(args)
-    # Apply clean formatting, if requested.
+    # Apply clean formatting if requested.
     if args.clean_format:
         code = remove_comments(code)
         code = _align_assignments(code)
-    # If header transformation is requested, avoid using AST parsing.
+    # If header transformation is requested, use regex-based transformation.
     if args.unfold or args.fold:
         if args.unfold and args.fold:
             sys.stderr.write("Cannot specify both --unfold and --fold.\n")
             sys.exit(1)
         if args.function_name:
-            # Check for the function header via regex.
-            pattern = re.compile(r'^\s*def\s+%s\s*\(.*?\)\s*:' %
-                                 re.escape(args.function_name), re.DOTALL | re.MULTILINE)
+            pattern = re.compile(
+                r'^\s*def\s+%s\s*\(.*?\)\s*:' % re.escape(args.function_name),
+                re.DOTALL | re.MULTILINE
+            )
             if not pattern.search(code):
                 sys.stderr.write(f"Function '{args.function_name}' not found.\n")
                 sys.exit(1)
@@ -243,6 +260,7 @@ def view_function(args):
                                                             unfold=transform_flag)
         print(transformed_code)
     else:
+        # Use AST-based extraction.
         try:
             funcs = get_functions_from_code(code)
         except SyntaxError as se:
@@ -250,7 +268,13 @@ def view_function(args):
             sys.exit(1)
         if args.function_name:
             if args.function_name in funcs:
-                print(funcs[args.function_name])
+                result = funcs[args.function_name]
+                # If the result appears to be only a header, try regex-based fallback.
+                if '\n' not in result:
+                    fallback = extract_function_regex(code, args.function_name)
+                    if fallback:
+                        result = fallback
+                print(result)
             else:
                 sys.stderr.write(f"Function '{args.function_name}' not found.\n")
         else:
@@ -362,7 +386,8 @@ def list_dependencies(args):
 def main():
     parser = argparse.ArgumentParser(
         description="A command-line tool to manage Python functions.",
-        add_help=False)
+        add_help=False
+    )
     parser.add_argument("-f", "--file",
                         help="Specify a Python file to operate on. If not provided, reads from stdin.")
     subparsers = parser.add_subparsers(dest='command',
