@@ -37,52 +37,54 @@ def remove_comments(source):
             cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
 
-##-
+####-
 import re
 
 def _align_assignments(code_segment):
     """
-    Aligns assignment operators ('=') for lines that are simple one-line assignments.
-    This version uses a regex that captures any left-hand side (LHS) up to the '=' 
-    (allowing for attribute access, indices, etc.) while skipping function/class 
-    definitions.
+    Aligns assignment operators (including compound assignments) for lines that are simple one-line assignments.
+    Lines that begin with 'def' or 'class' are ignored.
+    
+    The regex captures:
+      group(1): indentation
+      group(2): left-hand side (LHS)
+      group(3): assignment operator (compound operators like +=, -=, etc., or plain =)
+      group(4): right-hand side (RHS)
+      
+    Consecutive assignment lines are then aligned so that the operators line up vertically.
     """
-    # This pattern ignores lines starting with "def" or "class" and captures:
-    #   group(1): leading whitespace (indentation)
-    #   group(2): the left-hand side (non-greedily, up to the first " =")
-    #   group(3): everything after the '='
-    assignment_pattern = re.compile(r'^(?!\s*(?:def|class)\b)(\s*)(.+?)\s*=\s*(.+)$')
+    # Order matters: longer compound operators must come before shorter ones.
+    assignment_pattern = re.compile(
+        r'^(?!\s*(?:def|class)\b)(\s*)(.+?)\s*(\*\*=|//=|>>=|<<=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=)\s*(.+)$'
+    )
     
     lines = code_segment.splitlines()
     aligned_output = []
-    group = []  # will accumulate tuples: (indent, lhs, rhs)
+    group = []  # Accumulates tuples (indent, lhs, operator, rhs) for consecutive assignments.
 
     def process_group():
         nonlocal group, aligned_output
         if not group:
             return
-        # Determine the maximum length of the LHS in this consecutive group.
-        max_lhs = max(len(lhs) for indent, lhs, rhs in group)
-        for indent, lhs, rhs in group:
-            # Add one extra space so that even the longest lhs gets a trailing space.
-            padding = max_lhs - len(lhs) + 1
-            new_line = f"{indent}{lhs}{' ' * padding}= {rhs}"
-            aligned_output.append(new_line)
-        group = []  # reset the group
+        # Compute maximum length for the LHS items in the group.
+        max_lhs = max(len(lhs) for indent, lhs, op, rhs in group)
+        for indent, lhs, op, rhs in group:
+            # Use ljust to pad the LHS so that all operators align
+            aligned_output.append(f"{indent}{lhs.ljust(max_lhs)} {op} {rhs}")
+        group.clear()
 
     for line in lines:
-        # Try to match assignment lines that are not function or class definitions.
         match = assignment_pattern.match(line)
         if match:
             group.append(match.groups())
         else:
-            # If a non-assignment line is encountered,
-            # flush any accumulated assignment group.
-            process_group()
+            process_group()  # Flush assignment group before adding a non-assignment line.
             aligned_output.append(line)
-    process_group()  # Flush any remaining group
+    process_group()  # Process any remaining group after looping
 
     return "\n".join(aligned_output)
+
+####-
 
 ##-
 
