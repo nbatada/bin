@@ -75,9 +75,8 @@ def _parse_multiple_columns_arg(values, df_columns, is_header_present, arg_name=
             raise type(e)(f"Error parsing {arg_name} '{values}': {e}")
     return col_indices
 
-# --------------------------
-# Argument Parser
-# --------------------------
+
+###--
 def _setup_arg_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -94,343 +93,160 @@ def _setup_arg_parser():
     # Global Options
     global_options = parser.add_argument_group("Global Options")
     global_options.add_argument(
-        "-s", "--sep", default="\t",
-        help="(-s, --sep) Field separator (default: tab). Supports escape sequences (e.g., '\\t', '\\n')."
+        "-f", "--file", type=argparse.FileType('r'), default=sys.stdin,
+        help="Input file (default: stdin)."
     )
     global_options.add_argument(
-        "--header", type=str, default="0", choices=["0", "None"],
-        help=("(--header) Specify header row: '0' for first row as header (default) or 'None' for no header. "
-              "Column operations are 1-indexed relative to data.")
+        "-s", "--sep", default="\t",
+        help="Field separator (default: tab). Supports escape sequences (e.g., '\\t', '\\n')."
+    )
+    global_options.add_argument(
+        "--noheader", action="store_true",
+        help="Indicate that the input does not have a header row. By default, the first row is used as the header."
     )
     global_options.add_argument(
         "--verbose", action="store_true",
-        help="(--verbose) Enable verbose debug output to stderr."
+        help="Enable verbose debug output to stderr."
     )
     global_options.add_argument(
         "-r", "--row-index",
-        help=("(-r, --row-index) Specify a column (1-indexed or name) to serve as the row identifier. "
-              "This column is preserved and typically shows first in output.")
+        help="Specify a column (1-indexed or name) to serve as the row identifier."
     )
     global_options.add_argument(
         "--lowmem", action="store_true",
-        help=("(--lowmem) Process data in chunks to reduce memory usage. Not all operations support this fully. "
-              "Operations that fully support low-memory: grep, tr, strip, prefix_add, cleanup_values, value_counts, numeric_map, regex_capture. "
-              "The 'sort' operation is incompatible with --lowmem.")
+        help="Process data in chunks to reduce memory usage. Not all operations support low-memory mode."
     )
     
-    subparsers = parser.add_subparsers(
-        dest="operation",
-        help="Available operations. Use 'tbl.py <operation> --help' for details."
-    )
+    # Subparsers for operations
+    subparsers = parser.add_subparsers(dest="operation", help="Available operations. Use 'tbl.py <operation> --help' for details.")
     
     # MOVE
     parser_move = subparsers.add_parser("move", help="Move a column. Required: -i and -j.")
-    parser_move.add_argument(
-        "-i", required=True,
-        help="(-i) Source column (index 1-indexed or name)."
-    )
-    parser_move.add_argument(
-        "-j", required=True,
-        help="(-j) Destination column (index 1-indexed or name). If beyond existing columns, appends."
-    )
+    parser_move.add_argument("-i", required=True, help="Source column (1-indexed or name).")
+    parser_move.add_argument("-j", required=True, help="Destination column (1-indexed or name).")
     
     # COL_INSERT
     parser_col_insert = subparsers.add_parser("col_insert", help="Insert a new column. Required: -i and -v.")
-    parser_col_insert.add_argument(
-        "-i", required=True,
-        help="(-i) Column position (1-indexed or name) where the new column will be inserted."
-    )
-    parser_col_insert.add_argument(
-        "-v", "--value", required=True,
-        help="(-v) Value to populate in the new column. Supports escape sequences."
-    )
-    parser_col_insert.add_argument(
-        "--new-header", default="new_column",
-        help="(--new-header) Header name for the new column (default: 'new_column')."
-    )
+    parser_col_insert.add_argument("-i", required=True, help="Column position (1-indexed or name) for insertion.")
+    parser_col_insert.add_argument("-v", "--value", required=True, help="Value to populate the new column.")
+    parser_col_insert.add_argument("--new-header", default="new_column", help="Header name for the new column (default: 'new_column').")
     
     # COL_DROP
     parser_col_drop = subparsers.add_parser("col_drop", help="Drop columns. Required: -i.")
-    parser_col_drop.add_argument(
-        "-i", required=True,
-        help="(-i) Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns."
-    )
+    parser_col_drop.add_argument("-i", required=True, help="Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns.")
     
-    # GREP
-    #-
     # GREP
     parser_grep = subparsers.add_parser("grep", help="Filter rows. Required: -i and one of -p, --starts-with, --ends-with, or --word-file.")
-    group_grep = parser_grep.add_mutually_exclusive_group(required=True)
-    parser_grep.add_argument(
-        "-i", required=True,
-        help="(-i) Column (1-indexed or name) to apply the grep filter."
-    )
-    group_grep.add_argument(
-        "-p", "--pattern",
-        help="(-p, --pattern) Regex pattern to search for."
-    )
-    group_grep.add_argument(
-        "--starts-with",
-        help="(--starts-with) String that the column value should start with."
-    )
-    group_grep.add_argument(
-        "--ends-with",
-        help="(--ends-with) String that the column value should end with."
-    )
-    group_grep.add_argument(
-        "--word-file",
-        help="File containing words (one per line) to match against the column values."
-    )
-    # New options for word file matching:
-    parser_grep.add_argument(
-        "--substring-match",
-        action="store_true",
-        help=("By default, when matching the word-file a whole-word match is enforced (using \\b boundaries). "
-              "Use this flag to allow substring matching instead.")
-    )
-    parser_grep.add_argument(
-        "--tokenize",
-        action="store_true",
-        help="Split the target field on '.' and use the first token for matching (i.e. the gene name)."
-    )
-    parser_grep.add_argument(
-        "--list-missing-words",
-        action="store_true",
-        help="After processing, report which words (from the word file) were not found in the input."
-    )
-    parser_grep.add_argument(
-        "-v", "--invert", action="store_true",
-        help="Invert match: select rows that do NOT match the specified pattern or words in the file."
-    )
-    
-    #-
+    grep_group = parser_grep.add_mutually_exclusive_group(required=True)
+    parser_grep.add_argument("-i", required=True, help="Column to apply the grep filter (1-indexed or name).")
+    grep_group.add_argument("-p", "--pattern", help="Regex pattern to search for.")
+    grep_group.add_argument("--starts-with", help="String that the column value should start with.")
+    grep_group.add_argument("--ends-with", help="String that the column value should end with.")
+    grep_group.add_argument("--word-file", help="File containing words (one per line) to match against the column values.")
+    parser_grep.add_argument("--substring-match", action="store_true", 
+                               help="Allow substring matching when using a word file.")
+    parser_grep.add_argument("--tokenize", action="store_true", 
+                               help="Split the target field on '.' and use the first token for matching.")
+    parser_grep.add_argument("--list-missing-words", action="store_true",
+                               help="Report words from the word file not found in the input.")
+    parser_grep.add_argument("-v", "--invert", action="store_true",
+                               help="Invert match: select rows that do NOT match the specified criteria.")
     
     # SPLIT
     parser_split = subparsers.add_parser("split", help="Split a column. Required: -i and -d.")
-    parser_split.add_argument(
-        "-i", required=True,
-        help="(-i) Column (1-indexed or name) to split."
-    )
-    parser_split.add_argument(
-        "-d", "--delimiter", required=True,
-        help="(-d, --delimiter) Delimiter to split the column by. Supports escape sequences."
-    )
-    parser_split.add_argument(
-        "--new-header-prefix", default="split_col",
-        help="(--new-header-prefix) Prefix for the new columns (e.g., 'split_col_1')."
-    )
+    parser_split.add_argument("-i", required=True, help="Column to split (1-indexed or name).")
+    parser_split.add_argument("-d", "--delimiter", required=True, help="Delimiter to split the column by. Supports escape sequences.")
+    parser_split.add_argument("--new-header-prefix", default="split_col", help="Prefix for the new columns (default: 'split_col').")
     
     # JOIN
     parser_join = subparsers.add_parser("join", help="Join columns. Required: -i. Optionally, -j specifies target column.")
-    parser_join.add_argument(
-        "-i", required=True,
-        help="(-i) Comma-separated list of columns (1-indexed or names) to join."
-    )
-    parser_join.add_argument(
-        "-d", "--delimiter", default="",
-        help="(-d, --delimiter) Delimiter to insert between joined values (default: no delimiter). Supports escape sequences."
-    )
-    parser_join.add_argument(
-        "--new-header", default="joined_column",
-        help="(--new-header) Header name for the resulting joined column (default: 'joined_column')."
-    )
-    parser_join.add_argument(
-        "-j", "--target-col-idx",
-        help="(-j) (Optional) Target column (1-indexed or name) where the joined column will be placed. Defaults to the first specified in -i."
-    )
+    parser_join.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to join.")
+    parser_join.add_argument("-d", "--delimiter", default="", help="Delimiter to insert between joined values (default: no delimiter). Supports escape sequences.")
+    parser_join.add_argument("--new-header", default="joined_column", help="Header for the resulting joined column (default: 'joined_column').")
+    parser_join.add_argument("-j", "--target-col-idx", help="Target column (1-indexed or name) where the joined column will be placed.")
     
     # TR (Translate)
     parser_tr = subparsers.add_parser("tr", help="Translate values. Required: -i and either -d (dict file) or --from-val with --to-val.")
-    parser_tr.add_argument(
-        "-i", required=True,
-        help="(-i) Column (1-indexed or name) to translate."
-    )
+    parser_tr.add_argument("-i", required=True, help="Column to translate (1-indexed or name).")
     tr_group = parser_tr.add_mutually_exclusive_group(required=True)
-    tr_group.add_argument(
-        "-d", "--dict-file",
-        help="(-d, --dict-file) Path to a two-column file (key<sep>value) for mapping. Uses the main --sep as separator."
-    )
-    tr_group.add_argument(
-        "--from-val",
-        help="(--from-val) Value to translate from (for single translation). Supports escape sequences."
-    )
-    parser_tr.add_argument(
-        "--to-val",
-        help="(--to-val) Value to translate to (for single translation). Supports escape sequences."
-    )
-    parser_tr.add_argument(
-        "--regex", action="store_true",
-        help="(--regex) Treat --from-val as a regex pattern (default is literal)."
-    )
-    parser_tr.add_argument(
-        "--new-header", default="_translated",
-        help=("(--new-header) Suffix or new header for the translated column. If a suffix (e.g., '_translated') is given, it is appended; "
-              "if a full name is given, it replaces the original. (default: '_translated')")
-    )
-    parser_tr.add_argument(
-        "--in-place", action="store_true",
-        help="(--in-place) Replace the original column with the translated values."
-    )
+    tr_group.add_argument("-d", "--dict-file", help="Path to a two-column file (key<sep>value) for mapping. Uses the main --sep as separator.")
+    tr_group.add_argument("--from-val", help="Value to translate from (for single translation). Supports escape sequences.")
+    parser_tr.add_argument("--to-val", help="Value to translate to (for single translation). Supports escape sequences.")
+    parser_tr.add_argument("--regex", action="store_true", help="Treat --from-val as a regex pattern (default is literal).")
+    parser_tr.add_argument("--new-header", default="_translated", help="Suffix or new header for the translated column (default: '_translated').")
+    parser_tr.add_argument("--in-place", action="store_true", help="Replace the original column with the translated values.")
     
     # SORT
-    parser_sort = subparsers.add_parser("sort", help="Sort table. Required: -i. (Incompatible with --lowmem.)")
-    parser_sort.add_argument(
-        "-i", required=True,
-        help="(-i) Column (1-indexed or name) to sort by. Only one column should be specified."
-    )
-    parser_sort.add_argument(
-        "--desc", action="store_true",
-        help="(--desc) Sort in descending order (default is ascending)."
-    )
-    parser_sort.add_argument(
-        "-p", "--pattern",
-        help=("(-p, --pattern) Regex pattern to extract a numeric key from the column specified by -i (e.g., '\\b([0-9]+(?:\\.[0-9]+)?)[A-Z]').")
-    )
-    parser_sort.add_argument(
-        "--suffix-map",
-        help=("(--suffix-map) Comma-separated key-value pairs for suffix mapping (e.g., 'K:1000,M:1000000,G:1000000000'). "
-              "Used with --pattern for numeric sorting. Ignored if --expand-scientific is used.")
-    )
-    parser_sort.add_argument(
-        "--expand-scientific", action="store_true",
-        help=("If provided, uses a default mapping of K:1000, M:1000000, G:1000000000, T:1000000000000, and P:1000000000000000. "
-              "Overrides any supplied --suffix-map.")
-    )
-    parser_sort.add_argument(
-        "-ps", "--pattern-string",
-        help=("Optional additional regex pattern for a secondary string sort key (e.g., '\\bchr2_([A-Za-z]+)_'). "
-              "If provided, the sort key becomes a tuple (numeric key, secondary key). For rows where this pattern does not match, the full value is used.")
-    )
+    parser_sort = subparsers.add_parser("sort", help="Sort table. Required: -i. (Not compatible with lowmem mode.)")
+    parser_sort.add_argument("-i", required=True, help="Column to sort by (1-indexed or name). Only one column should be specified.")
+    parser_sort.add_argument("--desc", action="store_true", help="Sort in descending order (default is ascending).")
+    parser_sort.add_argument("-p", "--pattern", help="Regex pattern to extract a numeric key from the column.")
+    parser_sort.add_argument("--suffix-map", help="Comma-separated key:value pairs for suffix mapping (used with --pattern).")
+    parser_sort.add_argument("--expand-scientific", action="store_true", 
+                             help="Use a default mapping for scientific suffixes and override any supplied --suffix-map.")
+    parser_sort.add_argument("-ps", "--pattern-string", help="Optional additional regex pattern for a secondary string sort key.")
     
     # CLEANUP HEADER
     parser_cleanup_header = subparsers.add_parser("cleanup_header", help="Clean header names (lowercase, remove special characters, replace spaces with underscores).")
     
     # CLEANUP VALUES
     parser_cleanup_values = subparsers.add_parser("cleanup_values", help="Clean values in specified columns. Required: -i.")
-    parser_cleanup_values.add_argument(
-        "-i", required=True,
-        help="(-i) Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column."
-    )
+    parser_cleanup_values.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column.")
     
     # PREFIX ADD
     parser_prefix_add = subparsers.add_parser("prefix_add", help="Add a prefix to column values. Required: -i and -v.")
-    parser_prefix_add.add_argument(
-        "-i", required=True,
-        help="(-i) Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column."
-    )
-    parser_prefix_add.add_argument(
-        "-v", "--string", required=True,
-        help="(-v) The prefix string to add. Supports escape sequences."
-    )
-    parser_prefix_add.add_argument(
-        "-d", "--delimiter", default="",
-        help="(-d, --delimiter) Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences."
-    )
+    parser_prefix_add.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column.")
+    parser_prefix_add.add_argument("-v", "--string", required=True, help="The prefix string to add. Supports escape sequences.")
+    parser_prefix_add.add_argument("-d", "--delimiter", default="", help="Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences.")
     
     # VALUE COUNTS
     parser_value_counts = subparsers.add_parser("value_counts", help="Count top occurring values. Required: -i.")
-    parser_value_counts.add_argument(
-        "-n", "--top-n", type=int, default=5,
-        help="(-n, --top-n) Number of top values to display (default: 5)."
-    )
-    parser_value_counts.add_argument(
-        "-i", required=True,
-        help="(-i) Comma-separated list of columns (1-indexed or names) to count. Use 'all' for every column."
-    )
+    parser_value_counts.add_argument("-n", "--top-n", type=int, default=5, help="Number of top values to display (default: 5).")
+    parser_value_counts.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to count. Use 'all' for every column.")
     
     # STRIP
     parser_strip = subparsers.add_parser("strip", help="Remove a regex pattern from column values. Required: -i and -p.")
-    parser_strip.add_argument(
-        "-i", required=True,
-        help="(-i) Column (1-indexed or name) to strip characters from."
-    )
-    parser_strip.add_argument(
-        "-p", "--pattern", required=True,
-        help="(-p, --pattern) Regex pattern to remove from the values."
-    )
-    parser_strip.add_argument(
-        "--new-header", default="_stripped",
-        help=("(--new-header) Suffix (or new header) for the column after stripping. If a suffix is given (e.g., '_stripped'), "
-              "it is appended; if a full name, it replaces the original. (default: '_stripped')")
-    )
-    parser_strip.add_argument(
-        "--in-place", action="store_true",
-        help="(--in-place) Modify the column in place instead of creating a new column."
-    )
+    parser_strip.add_argument("-i", required=True, help="Column to strip (1-indexed or name).")
+    parser_strip.add_argument("-p", "--pattern", required=True, help="Regex pattern to remove from the column values.")
+    parser_strip.add_argument("--new-header", default="_stripped", help="Suffix or new header for the column after stripping (default: '_stripped').")
+    parser_strip.add_argument("--in-place", action="store_true", help="Modify the column in place instead of creating a new column.")
     
     # NUMERIC MAP
     parser_numeric_map = subparsers.add_parser("numeric_map", help="Map unique string values to numbers. Required: -i.")
-    parser_numeric_map.add_argument(
-        "-i", required=True,
-        help="(-i) Column (1-indexed or name) whose unique values are to be mapped to numbers."
-    )
-    parser_numeric_map.add_argument(
-        "--new-header",
-        help="(--new-header) Header for the new numeric mapping column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME')."
-    )
+    parser_numeric_map.add_argument("-i", required=True, help="Column (1-indexed or name) whose unique values are to be mapped to numbers.")
+    parser_numeric_map.add_argument("--new-header", help="Header for the new numeric mapping column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME').")
     
     # REGEX CAPTURE
-    parser_regex_capture = subparsers.add_parser("regex_capture", help="Capture substrings using a regex group. Required: -i and -p.")
-    parser_regex_capture.add_argument(
-        "-i", required=True,
-        help="(-i) Column (1-indexed or name) on which to apply the regex."
-    )
-    parser_regex_capture.add_argument(
-        "-p", "--pattern", required=True,
-        help="(-p, --pattern) Regex pattern with at least one capturing group (e.g., 'ID=([^;]+)')."
-    )
-    parser_regex_capture.add_argument(
-        "--new-header", default="_captured",
-        help=("(--new-header) Suffix or new header for the captured column (default: '_captured'). If a suffix (e.g., '_captured') is provided, "
-              "it is appended; if a full name, it replaces the original.")
-    )
+    parser_regex_capture = subparsers.add_parser("regex_capture", help="Capture substrings using a regex capturing group. Required: -i and -p.")
+    parser_regex_capture.add_argument("-i", required=True, help="Column on which to apply the regex (1-indexed or name).")
+    parser_regex_capture.add_argument("-p", "--pattern", required=True, help="Regex pattern with at least one capturing group (e.g., '_(S[0-9]+)\\.' ).")
+    parser_regex_capture.add_argument("--new-header", default="_captured", help="Suffix or new header for the captured column (default: '_captured').")
     
     # VIEW
     parser_view = subparsers.add_parser("view", help="Display the data in a formatted table.")
-    parser_view.add_argument(
-        "--max-rows", type=int, default=20,
-        help="(--max-rows) Maximum rows to display (default: 20)."
-    )
-    parser_view.add_argument(
-        "--max-cols", type=int, default=None,
-        help="(--max-cols) Maximum columns to display (default: all columns)."
-    )
+    parser_view.add_argument("--max-rows", type=int, default=20, help="Maximum number of rows to display (default: 20).")
+    parser_view.add_argument("--max-cols", type=int, default=None, help="Maximum number of columns to display (default: all columns).")
     
     # CUT
     parser_cut = subparsers.add_parser("cut", help="Cut/select columns. Required: -p.")
-    parser_cut.add_argument(
-        "-p", "--pattern", required=True,
-        help="(-p, --pattern) String or regex pattern to match column names for selection."
-    )
-    parser_cut.add_argument(
-        "--regex", action="store_true",
-        help="(--regex) Interpret the pattern as a regex (default is a literal match)."
-    )
+    parser_cut.add_argument("-p", "--pattern", required=True, help="String or regex pattern to match column names for selection.")
+    parser_cut.add_argument("--regex", action="store_true", help="Interpret the pattern as a regex (default is a literal match).")
     
     # VIEWHEADER
-    parser_viewheader = subparsers.add_parser("viewheader", help="Display the header names and positions.")
+    parser_viewheader = subparsers.add_parser("viewheader", help="Display header names and positions.")
     
     # ROW_INSERT
-    parser_row_insert = subparsers.add_parser("row_insert", help="Insert a new row at a specified 1-indexed position. Use -i 0 to insert as header.")
-    parser_row_insert.add_argument(
-        "-i", "--row-idx", type=int, default=0,
-        help="(-i, --row-idx) Row position (1-indexed) where the new row will be inserted. Use 0 to insert as header (default: 0)."
-    )
-    parser_row_insert.add_argument(
-        "-v", "--values",
-        help=("(-v, --values) Comma-separated list of values for the new row. Supports escape sequences. If -i 0 and not provided, "
-              "generic names like 'col1, col2, ...' are generated.")
-    )
+    parser_row_insert = subparsers.add_parser("row_insert", help="Insert a new row at a specified 1-indexed position. Use -i 0 to insert at the header.")
+    parser_row_insert.add_argument("-i", "--row-idx", type=int, default=0, help="Row position for insertion (1-indexed, 0 for header insertion).")
+    parser_row_insert.add_argument("-v", "--values", help="Comma-separated list of values for the new row. Supports escape sequences.")
     
     # ROW_DROP
-    parser_row_drop = subparsers.add_parser("row_drop", help="Delete row(s) at a specified 1-indexed position. Use -i 0 to drop the header/first row.")
-    parser_row_drop.add_argument(
-        "-i", "--row-idx", type=int, required=True,
-        help="(-i, --row-idx) Row position (1-indexed) to drop. Use 0 to drop the header (first row)."
-    )
+    parser_row_drop = subparsers.add_parser("row_drop", help="Delete row(s) at a specified 1-indexed position. Use -i 0 to drop the header row.")
+    parser_row_drop.add_argument("-i", "--row-idx", type=int, required=True, help="Row position to drop (1-indexed, 0 drops the header).")
     
     return parser
 
+###---
 # --------------------------
 # Operation Handler Functions
 # --------------------------
@@ -461,12 +277,10 @@ def _handle_col_drop(df, args, input_sep, is_header_present, row_idx_col_name):
     _print_verbose(args, f"Dropping columns: {names}.")
     df = df.drop(columns=names)
     return df
-#--
+
 def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    # Get the target column as a string series.
     col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
     series = df.iloc[:, col].astype(str)
-
     if args.word_file:
         try:
             with open(args.word_file, 'r', encoding='utf-8') as f:
@@ -476,30 +290,23 @@ def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name, state
         if not words:
             sys.stderr.write(f"Warning: Word file '{args.word_file}' is empty. No filtering performed.\n")
             return df, state
-
-        # Initialize the state for tracking matched words (if not already set)
         if args.list_missing_words:
             if state is None:
                 state = {}
             if "matched_words" not in state:
                 state["matched_words"] = set()
-
-        # If --tokenize is provided, work on the first token (e.g. gene name).
         if args.tokenize:
             tokens = series.str.split('.', n=1).str[0]
             if args.substring_match:
                 mask = tokens.apply(lambda token: any(word in token for word in words))
                 if args.list_missing_words:
-                    # Accumulate matched words from this chunk.
                     chunk_matches = {w for token in tokens.dropna() for w in words if w in token}
                     state["matched_words"].update(chunk_matches)
             else:
                 mask = tokens.isin(words)
                 if args.list_missing_words:
-                    # For exact matching, simply add the intersection.
                     state["matched_words"].update(set(tokens.dropna().unique()).intersection(words))
         else:
-            # Build regex pattern (full word matching by default using word boundaries)
             if args.substring_match:
                 pattern = "(" + "|".join(map(re.escape, words)) + ")"
             else:
@@ -515,25 +322,19 @@ def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name, state
                     raise ValueError(f"Error processing regex pattern '{pattern}': {e}")
                 state["matched_words"].update(chunk_matches)
         df = df[~mask] if args.invert else df[mask]
-
     elif args.pattern:
         try:
             mask = series.str.contains(args.pattern, regex=True, na=False)
         except re.error as e:
             raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
         df = df[~mask] if args.invert else df[mask]
-
     elif args.starts_with:
         mask = series.str.startswith(args.starts_with, na=False)
         df = df[~mask] if args.invert else df[mask]
-
     elif args.ends_with:
         mask = series.str.endswith(args.ends_with, na=False)
         df = df[~mask] if args.invert else df[mask]
-
     return df, state
-
-#--
 
 def _handle_split(df, args, input_sep, is_header_present, row_idx_col_name):
     col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
@@ -613,7 +414,6 @@ def _handle_tr(df, args, input_sep, is_header_present, row_idx_col_name):
             raise ValueError(f"Error: Invalid regex '{from_val}': {e}")
     else:
         raise ValueError("Error: For tr operation, specify either a dict file (-d) or both --from-val and --to-val.")
-    
     if args.in_place:
         df.iloc[:, col] = translated
     else:
@@ -628,10 +428,6 @@ def _handle_tr(df, args, input_sep, is_header_present, row_idx_col_name):
     return df
 
 def extract_numeric(value, pattern, suffix_map=None):
-    """
-    Extracts a numeric value from 'value' using 'pattern'. If 'suffix_map' is provided,
-    the entire match is passed to _parse_size_value.
-    """
     if not isinstance(value, str):
         return None
     m = re.search(pattern, value)
@@ -645,9 +441,6 @@ def extract_numeric(value, pattern, suffix_map=None):
     return None
 
 def _parse_size_value(value, suffix_map):
-    """
-    Parses a string of the form (number)(optional suffix) and returns its numeric value.
-    """
     m = re.match(r"(\d+(?:\.\d+)?)([KMGTP])?", value, re.IGNORECASE)
     if not m:
         try:
@@ -667,14 +460,13 @@ def _parse_size_value(value, suffix_map):
 def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
     cols = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "column (-i)")
     if len(cols) != 1:
-        raise ValueError("Error: Sort operation with -p requires a single column specified by -i.")
+        raise ValueError("Error: Sort operation requires a single column specified by -i.")
     target = df.columns[cols[0]]
-    
-    # If --expand-scientific is active and no --pattern is provided, set a default pattern.
+    # Use default regex if none provided.
     if args.expand_scientific and not args.pattern:
         args.pattern = r"(\d+(?:\.\d+)?)([KMGTP])?"
-    
-    # Determine which suffix mapping to use.
+    elif not args.pattern:
+        args.pattern = r"(\d+)"
     if args.expand_scientific:
         suffix_map = {'K': 1000, 'M': 1000000, 'G': 1000000000, 'T': 1000000000000, 'P': 1000000000000000}
     elif args.suffix_map:
@@ -690,24 +482,15 @@ def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
                 raise ValueError(f"Error: Suffix-map entry '{pair}' is malformed. Expected KEY:VALUE.")
     else:
         suffix_map = {}
-    
     _print_verbose(args, f"Sorting column '{target}' using pattern '{args.pattern}' with suffix map {suffix_map}.")
-
-    # Create a temporary column name for the numeric key.
     temp_numeric = f"_temp_numeric_sort_{target}"
-    
-    # Define a debug function that strips the value, converts it, and prints the conversion details.
     def debug_conversion(val):
         original_val = str(val)
         cleaned_val = original_val.strip()
         numeric_val = extract_numeric(cleaned_val, args.pattern, suffix_map)
         _print_verbose(args, f"DEBUG: Original '{original_val}' => Cleaned '{cleaned_val}' => Numeric {numeric_val}")
         return numeric_val
-    
-    # Apply the debug_conversion function so that we can observe the conversion for each cell.
     df[temp_numeric] = df[target].astype(str).apply(debug_conversion)
-    
-    # Prepare sort key list.
     sort_keys = [temp_numeric]
     if args.pattern_string:
         temp_secondary = f"_temp_string_sort_{target}"
@@ -716,12 +499,9 @@ def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
             return m.group(1) if m else val
         df[temp_secondary] = df[target].astype(str).apply(extract_secondary)
         sort_keys.append(temp_secondary)
-    sort_keys.append(target)  # For tie-breaking using the original value.
-    
+    sort_keys.append(target)
     ascending = not args.desc
     df = df.sort_values(by=sort_keys, ascending=ascending, kind='stable')
-    
-    # Remove temporary columns.
     drop_cols = [temp_numeric]
     if args.pattern_string:
         drop_cols.append(temp_secondary)
@@ -962,9 +742,10 @@ OPERATION_HANDLERS = {
 def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
     """Reads input into a DataFrame or a generator for chunked processing."""
     raw_first_line = []
+    input_stream = args.file  # use file provided by -f/--file
     if use_chunked:
         try:
-            reader = pd.read_csv(sys.stdin, sep=input_sep, header=header_param, dtype=str,
+            reader = pd.read_csv(input_stream, sep=input_sep, header=header_param, dtype=str,
                                  chunksize=CHUNK_SIZE, iterator=True)
             first_chunk = next(reader)
             if first_chunk.empty and args.operation not in ["viewheader", "view", "value_counts", "regex_capture"]:
@@ -977,10 +758,7 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
                 for chunk in reader:
                     yield chunk
             return generator(), raw_first_line
-        except StopIteration:
-            sys.stderr.write(f"Warning: Input is empty. Cannot perform '{args.operation}'.\n")
-            sys.exit(0)
-        except pd.errors.EmptyDataError:
+        except (StopIteration, pd.errors.EmptyDataError):
             sys.stderr.write(f"Warning: Input is empty. Cannot perform '{args.operation}'.\n")
             sys.exit(0)
         except Exception as e:
@@ -988,12 +766,12 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
             sys.exit(1)
     else:
         try:
-            content = sys.stdin.read()
+            content = input_stream.read()
             if not content.strip() and args.operation not in ["viewheader", "view", "value_counts"]:
                 sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires data.\n")
                 sys.exit(1)
             if not content.strip():
-                return pd.DataFrame(columns=[] if is_header_present else []), raw_first_line
+                return pd.DataFrame(columns=[]), raw_first_line
             csv_io = StringIO(content)
             if not is_header_present:
                 pos = csv_io.tell()
@@ -1003,7 +781,7 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
             df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str)
             return df, raw_first_line
         except pd.errors.EmptyDataError:
-            df = pd.DataFrame(columns=[] if is_header_present else [])
+            df = pd.DataFrame(columns=[])
             _print_verbose(args, "Empty input; proceeding with an empty DataFrame.")
             return df, raw_first_line
         except Exception as e:
@@ -1013,6 +791,7 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
 def _write_output_data(data, args, input_sep, is_header_present, header_printed):
     """Writes the processed DataFrame (or chunk) to stdout."""
     try:
+        # For operations such as view we do not output CSV
         if args.operation in ["view", "viewheader", "value_counts"]:
             return header_printed
         if isinstance(data, pd.DataFrame):
@@ -1031,42 +810,33 @@ def _write_output_data(data, args, input_sep, is_header_present, header_printed)
         sys.exit(1)
     return header_printed
 
-# --------------------------
-# Main Processing Function
-# --------------------------
+###--
 def main():
     parser = _setup_arg_parser()
     args = parser.parse_args()
-    if not hasattr(args, 'operation') or args.operation is None:
+    if not args.operation:
         parser.print_help()
         sys.exit(0)
     
-    # Build a command string for logging.
-    cmd = [sys.argv[0]]
-    if args.operation:
-        cmd.append(args.operation)
-    if hasattr(args, 'i') and args.i:
-        cmd.extend(["-i", str(args.i)])
-    if hasattr(args, 'pattern') and args.pattern:
-        cmd.extend(["-p", f"'{args.pattern}'"])
-    if hasattr(args, 'values') and args.values:
-        cmd.extend(["-v", f"'{args.values}'"])
-    if hasattr(args, 'j') and args.j:
-        cmd.extend(["-j", str(args.j)])
-    sys.stderr.write("# Processing: " + " ".join(cmd) + "\n")
-    
+    # Use --noheader to determine the header handling.
+    if args.noheader:
+        header_param = None
+        is_header_present = False
+    else:
+        header_param = 0  # Use the first row as header.
+        is_header_present = True
+
     input_sep = codecs.decode(args.sep, 'unicode_escape')
-    header_param = 0 if args.header == "0" else None
-    is_header_present = (args.header == "0")
     
+    # In low-memory mode, some operations (such as sort) are not allowed.
     if args.lowmem and args.operation == "sort":
         sys.stderr.write("Error: 'sort' operation cannot be performed in low-memory mode (--lowmem).\n")
         sys.exit(1)
     
     lowmem_ops = ["value_counts", "numeric_map", "grep", "tr", "strip", "prefix_add", "cleanup_values", "regex_capture"]
     use_chunked = args.lowmem and args.operation in lowmem_ops
-    
-    # Special handling for low-memory row operations (only for row_idx 0)
+
+    # Special handling for low-memory row operations.
     lowmem_row = False
     if args.operation in ["row_insert", "row_drop"]:
         if args.row_idx == 0:
@@ -1074,38 +844,36 @@ def main():
     if args.lowmem and args.operation in ["row_insert", "row_drop"] and not lowmem_row:
         sys.stderr.write(f"Error: '{args.operation}' is not compatible with --lowmem except for row_idx 0.\n")
         sys.exit(1)
-    
+
     if lowmem_row:
-        sys.stderr.write("# Processing: " + " ".join(cmd) + "\n")
+        sys.stderr.write("# Processing: " + " ".join(sys.argv) + "\n")
         if args.operation == "row_insert":
             _print_verbose(args, "Low-memory row_insert (header insertion).")
-            first_line = sys.stdin.readline().strip()
+            first_line = args.file.readline().strip()
             count = len(first_line.split(input_sep)) if first_line else (len(args.values.split(',')) if args.values else 1)
             values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')] if args.values else [f"col{i+1}" for i in range(count)]
             if len(values) > count:
                 values = values[:count]
-            elif len(values) < count:
-                values.extend([''] * (count - len(values)))
             sys.stdout.write(input_sep.join(values) + '\n')
             if first_line:
                 sys.stdout.write(first_line + '\n')
-            for line in sys.stdin:
+            for line in args.file:
                 sys.stdout.write(line)
             sys.exit(0)
         elif args.operation == "row_drop":
             _print_verbose(args, "Low-memory row_drop (dropping first row).")
             try:
-                first_line = sys.stdin.readline()
+                first_line = args.file.readline()
                 if not first_line.strip():
                     sys.stderr.write("Warning: Input may be empty when dropping first row.\n")
-                for line in sys.stdin:
+                for line in args.file:
                     sys.stdout.write(line)
             except BrokenPipeError:
                 pass
             sys.exit(0)
-    
+
     df_or_chunks, raw_first_line = _read_input_data(args, input_sep, header_param, is_header_present, use_chunked)
-    
+
     row_idx_col = None
     if args.row_index:
         if use_chunked:
@@ -1127,42 +895,56 @@ def main():
             else:
                 sys.stderr.write("Error: Cannot determine row-index column in current mode.\n")
                 sys.exit(1)
-    
-    #-
+
     header_printed = False
-    op_state = {}  # will accumulate state (for example, matched words when using grep)
+    op_state = {}
+    handler = OPERATION_HANDLERS.get(args.operation)
+    if handler is None:
+        sys.stderr.write(f"Error: Unsupported operation '{args.operation}'.\n")
+        sys.exit(1)
+
+    # Dispatch operations with the correct number of arguments.
     if use_chunked:
         for chunk in df_or_chunks:
-            # (Ensure proper column names for the chunk)
-            if is_header_present and not chunk.empty:
-                chunk.columns = chunk.columns
-            elif not is_header_present:
+            if not is_header_present:
                 chunk.columns = pd.Index(range(chunk.shape[1]))
-            # Process this chunk (for grep, _handle_grep returns both df and state)
-            processed, op_state["grep"] = _handle_grep(
-                chunk, args, input_sep, is_header_present, row_idx_col, state=op_state.get("grep", {})
-            )
+            if args.operation in ["grep", "numeric_map"]:
+                processed, op_state[args.operation] = handler(
+                    chunk, args, input_sep, is_header_present, row_idx_col,
+                    state=op_state.get(args.operation, {})
+                )
+            elif args.operation in ["view", "regex_capture", "viewheader"]:
+                processed = handler(
+                    chunk, args, input_sep, is_header_present, row_idx_col, raw_first_line
+                )
+            else:
+                processed = handler(
+                    chunk, args, input_sep, is_header_present, row_idx_col
+                )
             if row_idx_col and row_idx_col in processed.columns:
                 cols_order = [row_idx_col] + [col for col in processed.columns if col != row_idx_col]
                 processed = processed[cols_order]
             header_printed = _write_output_data(processed, args, input_sep, is_header_present, header_printed)
-        if args.word_file and args.list_missing_words:
+        if args.operation == "grep" and args.word_file and args.list_missing_words:
             with open(args.word_file, 'r', encoding='utf-8') as f:
                 word_list = [line.strip() for line in f if line.strip()]
             matched = op_state.get("grep", {}).get("matched_words", set())
             missing = set(word_list) - matched
-            sys.stderr.write("Words not seen in input: (n="+ str(len(missing))+") " + ", ".join(sorted(missing)) + "\n")
+            sys.stderr.write("Words not seen in input: (n=" + str(len(missing)) + ") " + ", ".join(sorted(missing)) + "\n")
     else:
-        processed_df, state = _handle_grep(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
-        if args.word_file and args.list_missing_words:
+        if args.operation in ["grep", "numeric_map"]:
+            processed_df, state = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
+        elif args.operation in ["view", "regex_capture", "viewheader"]:
+            processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col, raw_first_line)
+        else:
+            processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
+        if args.operation == "grep" and args.word_file and args.list_missing_words:
             with open(args.word_file, 'r', encoding='utf-8') as f:
                 word_list = [line.strip() for line in f if line.strip()]
             matched = state.get("matched_words", set()) if state else set()
             missing = set(word_list) - matched
             sys.stderr.write("Words not seen in input: " + ", ".join(sorted(missing)) + "\n")
         _write_output_data(processed_df, args, input_sep, is_header_present, header_printed)
-
-    #-
 
 if __name__ == "__main__":
     main()
