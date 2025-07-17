@@ -788,20 +788,45 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
             sys.stderr.write(f"Error reading input data: {e}\n")
             sys.exit(1)
 
+import csv  # Add this import near the top of your script
+
 def _write_output_data(data, args, input_sep, is_header_present, header_printed):
-    """Writes the processed DataFrame (or chunk) to stdout."""
     try:
-        # For operations such as view we do not output CSV
+        # For operations such as view we do not output with CSV formatting.
         if args.operation in ["view", "viewheader", "value_counts"]:
             return header_printed
         if isinstance(data, pd.DataFrame):
-            data.to_csv(sys.stdout, sep=input_sep, index=False, header=is_header_present, encoding='utf-8')
+            data.to_csv(
+                sys.stdout,
+                sep=input_sep,
+                index=False,
+                header=is_header_present,
+                encoding='utf-8',
+                quoting=csv.QUOTE_NONE,  # disable automatic quoting
+                escapechar='\\'
+            )
             return True
         if not header_printed and is_header_present:
-            data.to_csv(sys.stdout, sep=input_sep, index=False, header=True, encoding='utf-8')
+            data.to_csv(
+                sys.stdout,
+                sep=input_sep,
+                index=False,
+                header=True,
+                encoding='utf-8',
+                quoting=csv.QUOTE_NONE,
+                escapechar='\\'
+            )
             return True
         else:
-            data.to_csv(sys.stdout, sep=input_sep, index=False, header=False, encoding='utf-8')
+            data.to_csv(
+                sys.stdout,
+                sep=input_sep,
+                index=False,
+                header=False,
+                encoding='utf-8',
+                quoting=csv.QUOTE_NONE,
+                escapechar='\\'
+            )
             return header_printed
     except BrokenPipeError:
         pass
