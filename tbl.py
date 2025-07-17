@@ -2,10 +2,12 @@
 import sys
 import argparse
 import re
+import os
 import pandas as pd
 import codecs  # For handling escape sequences
 from io import StringIO  # For piped input handling with pandas
 from collections import Counter
+import csv  # For CSV formatting
 
 # Default chunk size when processing input in low-memory mode.
 CHUNK_SIZE = 10000
@@ -51,7 +53,7 @@ def _parse_column_arg(value, df_columns, is_header_present, arg_name="column"):
         return col_idx - 1
     except ValueError:
         if not is_header_present:
-            raise ValueError(f"Error: Cannot use column name '{value}' for {arg_name} when no header is present (--header=None). Use a 1-indexed integer.")
+            raise ValueError(f"Error: Cannot use column name '{value}' for {arg_name} when no header is present (--noheader option was provided). Use a 1-indexed integer.")
         if value not in df_columns:
             raise ValueError(f"Error: Column '{value}' not found in header for {arg_name}. Available: {list(df_columns)}.")
         return df_columns.get_loc(value)
@@ -75,8 +77,9 @@ def _parse_multiple_columns_arg(values, df_columns, is_header_present, arg_name=
             raise type(e)(f"Error parsing {arg_name} '{values}': {e}")
     return col_indices
 
-
-###--
+# --------------------------
+# Argument Parser
+# --------------------------
 def _setup_arg_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -103,6 +106,10 @@ def _setup_arg_parser():
     global_options.add_argument(
         "--noheader", action="store_true",
         help="Indicate that the input does not have a header row. By default, the first row is used as the header."
+    )
+    global_options.add_argument(
+        "--ignore-lines", default="^#",
+        help="Ignore lines starting with this pattern (default: '^#')."
     )
     global_options.add_argument(
         "--verbose", action="store_true",
@@ -227,11 +234,19 @@ def _setup_arg_parser():
     parser_view.add_argument("--max-rows", type=int, default=20, help="Maximum number of rows to display (default: 20).")
     parser_view.add_argument("--max-cols", type=int, default=None, help="Maximum number of columns to display (default: all columns).")
     
-    # CUT
-    parser_cut = subparsers.add_parser("cut", help="Cut/select columns. Required: -p.")
-    parser_cut.add_argument("-p", "--pattern", required=True, help="String or regex pattern to match column names for selection.")
-    parser_cut.add_argument("--regex", action="store_true", help="Interpret the pattern as a regex (default is a literal match).")
-    
+
+    # CUT (Enhanced): allow pattern as a positional argument.
+    parser_cut = subparsers.add_parser("cut", help="Cut/select columns. Provide either a regex pattern or, if --list is specified, a comma-separated list (or filename) of column names for selection.")
+    # Add a positional argument for pattern that will be used if no explicit -p/--pattern is provided.
+    parser_cut.add_argument("pattern", nargs="?", default=None,
+                            help=("Either a regex pattern for matching column names "
+                                  "or, when --list is specified, a comma-separated list "
+                                  "of column names (or a file containing column names)."))
+    parser_cut.add_argument("--regex", action="store_true",
+                            help="Interpret the supplied pattern as a regex (default for --list is literal matching).")
+    parser_cut.add_argument("--list", action="store_true",
+                            help="Interpret the pattern as a comma-separated list of column names, or as a file containing one name per line.")
+
     # VIEWHEADER
     parser_viewheader = subparsers.add_parser("viewheader", help="Display header names and positions.")
     
@@ -246,7 +261,6 @@ def _setup_arg_parser():
     
     return parser
 
-###---
 # --------------------------
 # Operation Handler Functions
 # --------------------------
@@ -510,7 +524,7 @@ def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
 
 def _handle_cleanup_header(df, args, input_sep, is_header_present, row_idx_col_name):
     if not is_header_present:
-        sys.stderr.write("Warning: '--header=None' provided. 'cleanup_header' will have no effect.\n")
+        sys.stderr.write("Warning: '--noheader' provided. 'cleanup_header' will have no effect.\n")
         _print_verbose(args, "Skipping cleanup_header (no header).")
     else:
         original = list(df.columns)
@@ -630,31 +644,53 @@ def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_f
     pd.reset_option('display.width')
     pd.reset_option('display.colheader_justify')
     sys.exit(0)
-
 def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
-    pattern = args.pattern
-    _print_verbose(args, f"Selecting columns matching pattern '{pattern}' (regex: {args.regex}).")
-    selected = []
-    for col in df.columns:
-        if args.regex:
-            try:
-                if re.search(pattern, str(col)):
-                    selected.append(col)
-            except re.error as e:
-                raise ValueError(f"Error: Invalid regex '{pattern}': {e}")
+    # When --list is set, you must supply a column list via the positional "pattern" argument.
+    if args.list:
+        if not is_header_present:
+            raise ValueError("Error: File has no header (--noheader option was provided)")
+        if not args.pattern:
+            raise ValueError("Error: When using --list, you must provide a comma-separated list of column names or a file with column names.")
+        # Check if the provided pattern is a file, otherwise treat it as a comma-separated list.
+        if os.path.exists(args.pattern):
+            with open(args.pattern, "r", encoding="utf-8") as f:
+                col_list = [line.strip() for line in f if line.strip()]
         else:
-            if pattern in str(col):
-                selected.append(col)
-    if row_idx_col_name and row_idx_col_name in df.columns and row_idx_col_name not in selected:
-        selected = [row_idx_col_name] + selected
-        _print_verbose(args, f"Including row-index column '{row_idx_col_name}' in the output.")
-    if not selected:
-        sys.stderr.write(f"Warning: No columns matched pattern '{pattern}'. Output will be empty.\n")
-        df = pd.DataFrame(columns=[])
+            col_list = [x.strip() for x in args.pattern.split(',') if x.strip()]
+        missing = [col for col in col_list if col not in df.columns]
+        if missing:
+            raise ValueError(f"Error: Columns not found: {missing}. Available columns: {list(df.columns)}")
+        _print_verbose(args, f"Columns selected: {col_list}.")
+        df = df[col_list]  # Use the order as provided
+        return df
     else:
-        df = df[selected]
-        _print_verbose(args, f"Columns selected: {selected}.")
-    return df
+        # In non-list mode, a pattern must be provided (either regex or literal).
+        if not args.pattern:
+            raise ValueError("Error: A pattern must be provided (either as a positional argument or with -p/--pattern) when not using --list mode.")
+        pattern = args.pattern
+        _print_verbose(args, f"Selecting columns matching pattern '{pattern}' (regex: {args.regex}).")
+        selected = []
+        for col in df.columns:
+            if args.regex:
+                try:
+                    if re.search(pattern, str(col)):
+                        selected.append(col)
+                except re.error as e:
+                    raise ValueError(f"Error: Invalid regex '{pattern}': {e}")
+            else:
+                if pattern in str(col):
+                    selected.append(col)
+        # Optionally add the row index column to the output.
+        if row_idx_col_name and row_idx_col_name in df.columns and row_idx_col_name not in selected:
+            selected = [row_idx_col_name] + selected
+            _print_verbose(args, f"Including row-index column '{row_idx_col_name}' in the output.")
+        if not selected:
+            sys.stderr.write(f"Warning: No columns matched pattern '{pattern}'. Output will be empty.\n")
+            df = pd.DataFrame(columns=[])
+        else:
+            df = df[selected]
+            _print_verbose(args, f"Columns selected: {selected}.")
+        return df
 
 def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content):
     _print_verbose(args, "Listing header names with 1-indexed positions.")
@@ -743,9 +779,19 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
     """Reads input into a DataFrame or a generator for chunked processing."""
     raw_first_line = []
     input_stream = args.file  # use file provided by -f/--file
+
+    # Process ignore-lines option: if provided, remove leading '^' if present.
+    comment_char = None
+    if args.ignore_lines:
+        if args.ignore_lines.startswith('^'):
+            comment_char = args.ignore_lines[1:]
+        else:
+            comment_char = args.ignore_lines
+
     if use_chunked:
         try:
             reader = pd.read_csv(input_stream, sep=input_sep, header=header_param, dtype=str,
+                                 comment=comment_char,
                                  chunksize=CHUNK_SIZE, iterator=True)
             first_chunk = next(reader)
             if first_chunk.empty and args.operation not in ["viewheader", "view", "value_counts", "regex_capture"]:
@@ -778,7 +824,7 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
                 first_line = csv_io.readline().strip()
                 raw_first_line = first_line.split(input_sep) if first_line else []
                 csv_io.seek(pos)
-            df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str)
+            df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str, comment=comment_char)
             return df, raw_first_line
         except pd.errors.EmptyDataError:
             df = pd.DataFrame(columns=[])
@@ -788,11 +834,9 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
             sys.stderr.write(f"Error reading input data: {e}\n")
             sys.exit(1)
 
-import csv  # Add this import near the top of your script
-
 def _write_output_data(data, args, input_sep, is_header_present, header_printed):
     try:
-        # For operations such as view we do not output with CSV formatting.
+        # For operations such as view we do not output CSV formatting.
         if args.operation in ["view", "viewheader", "value_counts"]:
             return header_printed
         if isinstance(data, pd.DataFrame):
@@ -835,7 +879,6 @@ def _write_output_data(data, args, input_sep, is_header_present, header_printed)
         sys.exit(1)
     return header_printed
 
-###--
 def main():
     parser = _setup_arg_parser()
     args = parser.parse_args()
@@ -973,3 +1016,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
