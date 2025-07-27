@@ -47,9 +47,9 @@ def _parse_column_arg(value, df_columns, is_header_present, arg_name="column"):
     try:
         col_idx = int(value)
         if col_idx < 1:
-            raise ValueError(f"Error: {arg_name} index '{value}' must be >= 1 (1-indexed).")
-        if col_idx - 1 > len(df_columns):
-            raise IndexError(f"Error: {arg_name} index '{value}' is out of bounds. Max is {len(df_columns)}.")
+            raise ValueError(f"Error: {arg_name} '{value}' must be >= 1 (1-indexed).")
+        if col_idx - 1 >= len(df_columns):
+            raise IndexError(f"Error: {arg_name} '{value}' is out of bounds. Max is {len(df_columns)}.")
         return col_idx - 1
     except ValueError:
         if not is_header_present:
@@ -127,32 +127,38 @@ def _setup_arg_parser():
     # Subparsers for operations
     subparsers = parser.add_subparsers(dest="operation", help="Available operations. Use 'tbl.py <operation> --help' for details.")
     
+    # TRANSPOSE
+    parser_transpose = subparsers.add_parser(
+        "transpose",
+        help="Transpose the input table. The first column's values are used as the header in the new output table."
+    )
+    
     # MOVE
-    parser_move = subparsers.add_parser("move", help="Move a column. Required: -i and -j.")
-    parser_move.add_argument("-i", required=True, help="Source column (1-indexed or name).")
-    parser_move.add_argument("-j", required=True, help="Destination column (1-indexed or name).")
+    parser_move = subparsers.add_parser("move", help="Move a column. Required: --column and --dest-column.")
+    parser_move.add_argument("-n", "--column", required=True, help="Source column (1-indexed or name).")
+    parser_move.add_argument("-j", "--dest-column", required=True, help="Destination column (1-indexed or name).")
     
     # COL_INSERT
-    parser_col_insert = subparsers.add_parser("col_insert", help="Insert a new column. Required: -i and -v.")
-    parser_col_insert.add_argument("-i", required=True, help="Column position (1-indexed or name) for insertion.")
+    parser_col_insert = subparsers.add_parser("col_insert", help="Insert a new column. Required: --column and -v/--value.")
+    parser_col_insert.add_argument("-n", "--column", required=True, help="Column position (1-indexed or name) for insertion.")
     parser_col_insert.add_argument("-v", "--value", required=True, help="Value to populate the new column.")
     parser_col_insert.add_argument("--new-header", default="new_column", help="Header name for the new column (default: 'new_column').")
     
     # COL_DROP
-    parser_col_drop = subparsers.add_parser("col_drop", help="Drop columns. Required: -i.")
-    parser_col_drop.add_argument("-i", required=True, help="Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns.")
+    parser_col_drop = subparsers.add_parser("col_drop", help="Drop columns. Required: --column.")
+    parser_col_drop.add_argument("-n", "--column", required=True, help="Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns.")
     
     # GREP
-    parser_grep = subparsers.add_parser("grep", help="Filter rows. Required: -i and one of -p, --starts-with, --ends-with, or --word-file.")
+    parser_grep = subparsers.add_parser("grep", help="Filter rows. Required: --column and one of -p/--pattern, --starts-with, --ends-with, or --word-file.")
     grep_group = parser_grep.add_mutually_exclusive_group(required=True)
-    parser_grep.add_argument("-i", required=True, help="Column to apply the grep filter (1-indexed or name).")
+    parser_grep.add_argument("-n", "--column", required=True, help="Column to apply the grep filter (1-indexed or name).")
     grep_group.add_argument("-p", "--pattern", help="Regex pattern to search for.")
     grep_group.add_argument("--starts-with", help="String that the column value should start with.")
     grep_group.add_argument("--ends-with", help="String that the column value should end with.")
     grep_group.add_argument("--word-file", help="File containing words (one per line) to match against the column values.")
-    parser_grep.add_argument("--substring-match", action="store_true", 
+    parser_grep.add_argument("--substring-match", action="store_true",
                                help="Allow substring matching when using a word file.")
-    parser_grep.add_argument("--tokenize", action="store_true", 
+    parser_grep.add_argument("--tokenize", action="store_true",
                                help="Split the target field on '.' and use the first token for matching.")
     parser_grep.add_argument("--list-missing-words", action="store_true",
                                help="Report words from the word file not found in the input.")
@@ -160,21 +166,21 @@ def _setup_arg_parser():
                                help="Invert match: select rows that do NOT match the specified criteria.")
     
     # SPLIT
-    parser_split = subparsers.add_parser("split", help="Split a column. Required: -i and -d.")
-    parser_split.add_argument("-i", required=True, help="Column to split (1-indexed or name).")
+    parser_split = subparsers.add_parser("split", help="Split a column. Required: --column and -d/--delimiter.")
+    parser_split.add_argument("-n", "--column", required=True, help="Column to split (1-indexed or name).")
     parser_split.add_argument("-d", "--delimiter", required=True, help="Delimiter to split the column by. Supports escape sequences.")
     parser_split.add_argument("--new-header-prefix", default="split_col", help="Prefix for the new columns (default: 'split_col').")
     
     # JOIN
-    parser_join = subparsers.add_parser("join", help="Join columns. Required: -i. Optionally, -j specifies target column.")
-    parser_join.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to join.")
+    parser_join = subparsers.add_parser("join", help="Join columns. Required: --column. Optionally, --target-column specifies the destination for the joined column.")
+    parser_join.add_argument("-n", "--column", required=True, help="Comma-separated list of columns (1-indexed or names) to join.")
     parser_join.add_argument("-d", "--delimiter", default="", help="Delimiter to insert between joined values (default: no delimiter). Supports escape sequences.")
     parser_join.add_argument("--new-header", default="joined_column", help="Header for the resulting joined column (default: 'joined_column').")
-    parser_join.add_argument("-j", "--target-col-idx", help="Target column (1-indexed or name) where the joined column will be placed.")
+    parser_join.add_argument("-j", "--target-column", help="Target column (1-indexed or name) where the joined column will be placed.")
     
     # TR (Translate)
-    parser_tr = subparsers.add_parser("tr", help="Translate values. Required: -i and either -d (dict file) or --from-val with --to-val.")
-    parser_tr.add_argument("-i", required=True, help="Column to translate (1-indexed or name).")
+    parser_tr = subparsers.add_parser("tr", help="Translate values. Required: --column and either -d/--dict-file or --from-val with --to-val.")
+    parser_tr.add_argument("-n", "--column", required=True, help="Column to translate (1-indexed or name).")
     tr_group = parser_tr.add_mutually_exclusive_group(required=True)
     tr_group.add_argument("-d", "--dict-file", help="Path to a two-column file (key<sep>value) for mapping. Uses the main --sep as separator.")
     tr_group.add_argument("--from-val", help="Value to translate from (for single translation). Supports escape sequences.")
@@ -184,8 +190,8 @@ def _setup_arg_parser():
     parser_tr.add_argument("--in-place", action="store_true", help="Replace the original column with the translated values.")
     
     # SORT
-    parser_sort = subparsers.add_parser("sort", help="Sort table. Required: -i. (Not compatible with lowmem mode.)")
-    parser_sort.add_argument("-i", required=True, help="Column to sort by (1-indexed or name). Only one column should be specified.")
+    parser_sort = subparsers.add_parser("sort", help="Sort table. Required: --column. (Not compatible with lowmem mode.)")
+    parser_sort.add_argument("-n", "--column", required=True, help="Column to sort by (1-indexed or name). Only one column should be specified.")
     parser_sort.add_argument("--desc", action="store_true", help="Sort in descending order (default is ascending).")
     parser_sort.add_argument("-p", "--pattern", help="Regex pattern to extract a numeric key from the column.")
     parser_sort.add_argument("--suffix-map", help="Comma-separated key:value pairs for suffix mapping (used with --pattern).")
@@ -197,35 +203,35 @@ def _setup_arg_parser():
     parser_cleanup_header = subparsers.add_parser("cleanup_header", help="Clean header names (lowercase, remove special characters, replace spaces with underscores).")
     
     # CLEANUP VALUES
-    parser_cleanup_values = subparsers.add_parser("cleanup_values", help="Clean values in specified columns. Required: -i.")
-    parser_cleanup_values.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column.")
+    parser_cleanup_values = subparsers.add_parser("cleanup_values", help="Clean values in specified columns. Required: --column.")
+    parser_cleanup_values.add_argument("-n", "--column", required=True, help="Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column.")
     
     # PREFIX ADD
-    parser_prefix_add = subparsers.add_parser("prefix_add", help="Add a prefix to column values. Required: -i and -v.")
-    parser_prefix_add.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column.")
+    parser_prefix_add = subparsers.add_parser("prefix_add", help="Add a prefix to column values. Required: --column and -v/--string.")
+    parser_prefix_add.add_argument("-n", "--column", required=True, help="Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column.")
     parser_prefix_add.add_argument("-v", "--string", required=True, help="The prefix string to add. Supports escape sequences.")
     parser_prefix_add.add_argument("-d", "--delimiter", default="", help="Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences.")
     
     # VALUE COUNTS
-    parser_value_counts = subparsers.add_parser("value_counts", help="Count top occurring values. Required: -i.")
-    parser_value_counts.add_argument("-n", "--top-n", type=int, default=5, help="Number of top values to display (default: 5).")
-    parser_value_counts.add_argument("-i", required=True, help="Comma-separated list of columns (1-indexed or names) to count. Use 'all' for every column.")
+    parser_value_counts = subparsers.add_parser("value_counts", help="Count top occurring values. Required: --column.")
+    parser_value_counts.add_argument("-T", "--top-n", type=int, default=5, help="Number of top values to display (default: 5).")
+    parser_value_counts.add_argument("-n", "--column", required=True, help="Comma-separated list of columns (1-indexed or names) to count. Use 'all' for every column.")
     
     # STRIP
-    parser_strip = subparsers.add_parser("strip", help="Remove a regex pattern from column values. Required: -i and -p.")
-    parser_strip.add_argument("-i", required=True, help="Column to strip (1-indexed or name).")
+    parser_strip = subparsers.add_parser("strip", help="Remove a regex pattern from column values. Required: --column and -p/--pattern.")
+    parser_strip.add_argument("-n", "--column", required=True, help="Column to strip (1-indexed or name).")
     parser_strip.add_argument("-p", "--pattern", required=True, help="Regex pattern to remove from the column values.")
     parser_strip.add_argument("--new-header", default="_stripped", help="Suffix or new header for the column after stripping (default: '_stripped').")
     parser_strip.add_argument("--in-place", action="store_true", help="Modify the column in place instead of creating a new column.")
     
     # NUMERIC MAP
-    parser_numeric_map = subparsers.add_parser("numeric_map", help="Map unique string values to numbers. Required: -i.")
-    parser_numeric_map.add_argument("-i", required=True, help="Column (1-indexed or name) whose unique values are to be mapped to numbers.")
+    parser_numeric_map = subparsers.add_parser("numeric_map", help="Map unique string values to numbers. Required: --column.")
+    parser_numeric_map.add_argument("-n", "--column", required=True, help="Column (1-indexed or name) whose unique values are to be mapped to numbers.")
     parser_numeric_map.add_argument("--new-header", help="Header for the new numeric mapping column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME').")
     
     # REGEX CAPTURE
-    parser_regex_capture = subparsers.add_parser("regex_capture", help="Capture substrings using a regex capturing group. Required: -i and -p.")
-    parser_regex_capture.add_argument("-i", required=True, help="Column on which to apply the regex (1-indexed or name).")
+    parser_regex_capture = subparsers.add_parser("regex_capture", help="Capture substrings using a regex capturing group. Required: --column and -p/--pattern.")
+    parser_regex_capture.add_argument("-n", "--column", required=True, help="Column on which to apply the regex (1-indexed or name).")
     parser_regex_capture.add_argument("-p", "--pattern", required=True, help="Regex pattern with at least one capturing group (e.g., '_(S[0-9]+)\\.' ).")
     parser_regex_capture.add_argument("--new-header", default="_captured", help="Suffix or new header for the captured column (default: '_captured').")
     
@@ -234,19 +240,17 @@ def _setup_arg_parser():
     parser_view.add_argument("--max-rows", type=int, default=20, help="Maximum number of rows to display (default: 20).")
     parser_view.add_argument("--max-cols", type=int, default=None, help="Maximum number of columns to display (default: all columns).")
     
-
-    # CUT (Enhanced): allow pattern as a positional argument.
-    parser_cut = subparsers.add_parser("cut", help="Cut/select columns. Provide either a regex pattern or, if --list is specified, a comma-separated list (or filename) of column names for selection.")
-    # Add a positional argument for pattern that will be used if no explicit -p/--pattern is provided.
+    # CUT (Enhanced)
+    parser_cut = subparsers.add_parser("cut", help="Cut/select columns. Provide either a regex pattern or, if --list is specified, a list of column names.")
     parser_cut.add_argument("pattern", nargs="?", default=None,
-                            help=("Either a regex pattern for matching column names "
-                                  "or, when --list is specified, a comma-separated list "
-                                  "of column names (or a file containing column names)."))
+                        help=("Either a regex pattern for matching column names "
+                              "or, when --list is specified, a comma-separated list "
+                              "of column names (or a file containing column names)."))
     parser_cut.add_argument("--regex", action="store_true",
-                            help="Interpret the supplied pattern as a regex (default for --list is literal matching).")
+                        help="Interpret the supplied pattern as a regex (default for --list is literal matching).")
     parser_cut.add_argument("--list", action="store_true",
-                            help="Interpret the pattern as a comma-separated list of column names, or as a file containing one name per line.")
-
+                        help="Interpret the pattern as a comma-separated list of column names for selection in the given order.")
+    
     # VIEWHEADER
     parser_viewheader = subparsers.add_parser("viewheader", help="Display header names and positions.")
     
@@ -259,14 +263,72 @@ def _setup_arg_parser():
     parser_row_drop = subparsers.add_parser("row_drop", help="Delete row(s) at a specified 1-indexed position. Use -i 0 to drop the header row.")
     parser_row_drop.add_argument("-i", "--row-idx", type=int, required=True, help="Row position to drop (1-indexed, 0 drops the header).")
     
+    # New Subparsers for Plotting
+    # ggplot subcommand using Plotnine
+    parser_ggplot = subparsers.add_parser("ggplot", help="Generate a ggplot using Plotnine and save to a PDF file.")
+    parser_ggplot.add_argument("--geom", required=True, choices=["boxplot", "bar", "point", "hist", "tile", "pie"],
+                               help="Type of plot to generate. (Note: 'pie' is not supported in ggplot mode; use the matplotlib subcommand instead.)")
+    parser_ggplot.add_argument("--x", required=True, help="Column name for x aesthetic.")
+    parser_ggplot.add_argument("--y", help="Column name for y aesthetic (required for boxplot and point).")
+    parser_ggplot.add_argument("--fill", help="Column name for fill aesthetic (optional).")
+    parser_ggplot.add_argument("--facet", help="Facet formula, e.g., 'col1 ~ col2'.")
+    parser_ggplot.add_argument("--title", help="Plot title.")
+    parser_ggplot.add_argument("--xlab", help="Label for x-axis.")
+    parser_ggplot.add_argument("--ylab", help="Label for y-axis.")
+    parser_ggplot.add_argument("--xlim", help="x-axis limits as 'min,max'.")
+    parser_ggplot.add_argument("--ylim", help="y-axis limits as 'min,max'.")
+    parser_ggplot.add_argument("--x_scale_log", action="store_true", help="Use logarithmic scale for x-axis.")
+    parser_ggplot.add_argument("--y_scale_log", action="store_true", help="Use logarithmic scale for y-axis.")
+    parser_ggplot.add_argument("-o", "--output", required=True, help="Output PDF filename.")
+    parser_ggplot.add_argument("--melted", action="store_true", help="Indicate that input data is already melted. (If not provided, data will be auto-detected.)")
+    parser_ggplot.add_argument("--id_vars", help="Comma-separated list of columns to use as id_vars when melting (required if not wide).")
+    parser_ggplot.add_argument("--value_vars", help="Comma-separated list of columns to melt. If not provided, all columns not in id_vars are melted.")
+    parser_ggplot.add_argument("--figure_size", help="Set figure size as width,height in inches (default: 8,6).")
+    
+    # matplotlib subcommand for venn diagrams
+    parser_mpl = subparsers.add_parser("matplotlib", help="Generate a matplotlib-based plot (supports Venn diagrams) and save to a PDF file.")
+    parser_mpl.add_argument("--mode", required=True, choices=["venn2", "venn3"],
+                           help="Plot mode for matplotlib: 'venn2' or 'venn3'.")
+    parser_mpl.add_argument("--colnames", required=True,
+                           help="Comma-separated list of header names to use. (2 names for venn2; 3 names for venn3)")
+    parser_mpl.add_argument("--title", help="Plot title.")
+    parser_mpl.add_argument("--figure_size", help="Set figure size as width,height in inches (default: 8,6).")
+    parser_mpl.add_argument("-o", "--output", required=True, help="Output PDF filename.")
+    
+    # Melt
+    parser_melt = subparsers.add_parser("melt", help="Melt the input table into a long format.")
+    parser_melt.add_argument("--id_vars", required=True, help="Comma-separated list of column names to use as id_vars.")
+    parser_melt.add_argument("--value_vars", help="Comma-separated list of column names to be melted. If not provided, all columns not in id_vars are used.")
+    parser_melt.add_argument("--var_name", default="variable", help="Name for the new variable column (default: 'variable').")
+    parser_melt.add_argument("--value_name", default="value", help="Name for the new value column (default: 'value').")
+    
+    # Unmelt
+    parser_unmelt = subparsers.add_parser("unmelt", help="Pivot the melted table back to wide format.")
+    parser_unmelt.add_argument("--index", required=True, help="Column name to use as the index (row identifiers).")
+    parser_unmelt.add_argument("--columns", required=True, help="Column name that contains variable names (to become new columns).")
+    parser_unmelt.add_argument("--value", required=True, help="Column name that contains the values.")
+    
     return parser
 
 # --------------------------
 # Operation Handler Functions
 # --------------------------
+def _handle_transpose(df, args, input_sep, is_header_present, row_idx_col_name):
+    if is_header_present:
+        header_row = list(df.columns)
+        df = pd.concat([pd.DataFrame([header_row], columns=df.columns), df], ignore_index=True)
+    if df.shape[1] < 2:
+        sys.stderr.write("Error: Input table must have at least 2 columns for transpose operation (first column will be used as header).\n")
+        sys.exit(1)
+    new_headers = df.iloc[:, 0].tolist()
+    data_to_transpose = df.iloc[:, 1:]
+    transposed_df = data_to_transpose.T
+    transposed_df.columns = new_headers
+    return transposed_df
+
 def _handle_move(df, args, input_sep, is_header_present, row_idx_col_name):
-    from_idx = _parse_column_arg(args.i, df.columns, is_header_present, "source column (-i)")
-    to_idx = _parse_column_arg(args.j, df.columns, is_header_present, "destination column (-j)")
+    from_idx = _parse_column_arg(args.column, df.columns, is_header_present, "source column (--column)")
+    to_idx = _parse_column_arg(args.dest_column, df.columns, is_header_present, "destination column (--dest-column)")
     if to_idx > df.shape[1]:
         to_idx = df.shape[1]
     _print_verbose(args, f"Moving column '{df.columns[from_idx]}' from index {from_idx} to {to_idx}.")
@@ -276,7 +338,7 @@ def _handle_move(df, args, input_sep, is_header_present, row_idx_col_name):
     return df
 
 def _handle_col_insert(df, args, input_sep, is_header_present, row_idx_col_name):
-    pos = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    pos = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     value = codecs.decode(args.value, 'unicode_escape')
     new_header = args.new_header
     if is_header_present and new_header in df.columns:
@@ -286,14 +348,14 @@ def _handle_col_insert(df, args, input_sep, is_header_present, row_idx_col_name)
     return df
 
 def _handle_col_drop(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
     names = [df.columns[i] for i in indices]
     _print_verbose(args, f"Dropping columns: {names}.")
     df = df.drop(columns=names)
     return df
 
 def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     series = df.iloc[:, col].astype(str)
     if args.word_file:
         try:
@@ -351,7 +413,7 @@ def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name, state
     return df, state
 
 def _handle_split(df, args, input_sep, is_header_present, row_idx_col_name):
-    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     delim = codecs.decode(args.delimiter, 'unicode_escape')
     original = df.columns[col]
     _print_verbose(args, f"Splitting column '{original}' with delimiter {delim!r}.")
@@ -369,7 +431,7 @@ def _handle_split(df, args, input_sep, is_header_present, row_idx_col_name):
     return df
 
 def _handle_join(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
     if not indices:
         raise ValueError("Error: No columns specified for join operation.")
     delim = codecs.decode(args.delimiter, 'unicode_escape')
@@ -378,8 +440,8 @@ def _handle_join(df, args, input_sep, is_header_present, row_idx_col_name):
     joined = df.iloc[:, indices[0]].astype(str)
     for i in range(1, len(indices)):
         joined += delim + df.iloc[:, indices[i]].astype(str)
-    if args.target_col_idx:
-        target = _parse_column_arg(args.target_col_idx, df.columns, is_header_present, "target column (-j)")
+    if args.target_column:
+        target = _parse_column_arg(args.target_column, df.columns, is_header_present, "target column (--target-column)")
     else:
         target = indices[0]
     new_header = args.new_header
@@ -393,7 +455,7 @@ def _handle_join(df, args, input_sep, is_header_present, row_idx_col_name):
     return df
 
 def _handle_tr(df, args, input_sep, is_header_present, row_idx_col_name):
-    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     original = df.columns[col]
     translated = None
     if args.dict_file:
@@ -472,11 +534,10 @@ def _parse_size_value(value, suffix_map):
     return num
 
 def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
-    cols = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "column (-i)")
+    cols = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "column (--column)")
     if len(cols) != 1:
-        raise ValueError("Error: Sort operation requires a single column specified by -i.")
+        raise ValueError("Error: Sort operation requires a single column specified by --column.")
     target = df.columns[cols[0]]
-    # Use default regex if none provided.
     if args.expand_scientific and not args.pattern:
         args.pattern = r"(\d+(?:\.\d+)?)([KMGTP])?"
     elif not args.pattern:
@@ -533,7 +594,7 @@ def _handle_cleanup_header(df, args, input_sep, is_header_present, row_idx_col_n
     return df
 
 def _handle_cleanup_values(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
     names = [df.columns[i] for i in indices]
     _print_verbose(args, f"Cleaning values in columns: {names}.")
     for i in indices:
@@ -541,7 +602,7 @@ def _handle_cleanup_values(df, args, input_sep, is_header_present, row_idx_col_n
     return df
 
 def _handle_prefix_add(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
     prefix = codecs.decode(args.string, 'unicode_escape')
     delim = codecs.decode(args.delimiter, 'unicode_escape')
     names = [df.columns[i] for i in indices]
@@ -551,11 +612,8 @@ def _handle_prefix_add(df, args, input_sep, is_header_present, row_idx_col_name)
     return df
 
 def _handle_value_counts(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    if state is None:
-        counter = Counter()
-    else:
-        counter = state
-    indices = _parse_multiple_columns_arg(args.i, df.columns, is_header_present, "columns (-i)")
+    counter = Counter() if state is None else state
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
     if not indices:
         raise ValueError("Error: No columns specified for value_counts.")
     for i in indices:
@@ -568,7 +626,7 @@ def _handle_value_counts(df, args, input_sep, is_header_present, row_idx_col_nam
     sys.exit(0)
 
 def _handle_strip(df, args, input_sep, is_header_present, row_idx_col_name):
-    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     original = df.columns[col]
     try:
         new_series = df.iloc[:, col].astype(str).str.replace(args.pattern, '', regex=True)
@@ -588,12 +646,8 @@ def _handle_strip(df, args, input_sep, is_header_present, row_idx_col_name):
     return df
 
 def _handle_numeric_map(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    if state is None:
-        mapping = {}
-        next_id = 1
-    else:
-        mapping, next_id = state
-    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    mapping, next_id = ({} , 1) if state is None else state
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     original = df.columns[col]
     _print_verbose(args, f"Mapping unique values in '{original}' to numeric identifiers.")
     new_header = args.new_header if args.new_header else f"numeric_map_of_{original}"
@@ -610,7 +664,7 @@ def _handle_numeric_map(df, args, input_sep, is_header_present, row_idx_col_name
     return df, (mapping, next_id)
 
 def _handle_regex_capture(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content=None):
-    col = _parse_column_arg(args.i, df.columns, is_header_present, "column (-i)")
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     base = df.columns[col] if is_header_present else f"captured_column_{col+1}"
     if args.new_header.startswith("_"):
         new_header = str(base) + args.new_header
@@ -644,14 +698,13 @@ def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_f
     pd.reset_option('display.width')
     pd.reset_option('display.colheader_justify')
     sys.exit(0)
+
 def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
-    # When --list is set, you must supply a column list via the positional "pattern" argument.
     if args.list:
         if not is_header_present:
             raise ValueError("Error: File has no header (--noheader option was provided)")
         if not args.pattern:
             raise ValueError("Error: When using --list, you must provide a comma-separated list of column names or a file with column names.")
-        # Check if the provided pattern is a file, otherwise treat it as a comma-separated list.
         if os.path.exists(args.pattern):
             with open(args.pattern, "r", encoding="utf-8") as f:
                 col_list = [line.strip() for line in f if line.strip()]
@@ -661,10 +714,9 @@ def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
         if missing:
             raise ValueError(f"Error: Columns not found: {missing}. Available columns: {list(df.columns)}")
         _print_verbose(args, f"Columns selected: {col_list}.")
-        df = df[col_list]  # Use the order as provided
+        df = df[col_list]
         return df
     else:
-        # In non-list mode, a pattern must be provided (either regex or literal).
         if not args.pattern:
             raise ValueError("Error: A pattern must be provided (either as a positional argument or with -p/--pattern) when not using --list mode.")
         pattern = args.pattern
@@ -680,7 +732,6 @@ def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
             else:
                 if pattern in str(col):
                     selected.append(col)
-        # Optionally add the row index column to the output.
         if row_idx_col_name and row_idx_col_name in df.columns and row_idx_col_name not in selected:
             selected = [row_idx_col_name] + selected
             _print_verbose(args, f"Including row-index column '{row_idx_col_name}' in the output.")
@@ -692,7 +743,7 @@ def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
             _print_verbose(args, f"Columns selected: {selected}.")
         return df
 
-def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content):
+def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line):
     _print_verbose(args, "Listing header names with 1-indexed positions.")
     out_lines = []
     if df.empty and df.columns.size:
@@ -700,8 +751,8 @@ def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name,
             out_lines.append(f"{i+1}\t{col}")
     elif not df.empty:
         cols = list(df.columns)
-        if not is_header_present and raw_first_line_content:
-            for i, val in enumerate(raw_first_line_content):
+        if not is_header_present and raw_first_line:
+            for i, val in enumerate(raw_first_line):
                 indicator = " (Row Index)" if row_idx_col_name and cols[i] == row_idx_col_name else ""
                 out_lines.append(f"{i+1}\t{val}{indicator}")
         else:
@@ -746,6 +797,317 @@ def _handle_row_drop(df, args, input_sep, is_header_present, row_idx_col_name):
     _print_verbose(args, f"Dropped row at position {args.row_idx}. New shape: {df.shape}.")
     return df
 
+# New Plot Handlers
+def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
+    # Determine figure size.
+    if hasattr(args, "figure_size") and args.figure_size:
+        try:
+            if ',' in args.figure_size:
+                parts = args.figure_size.split(',')
+            elif 'x' in args.figure_size.lower():
+                parts = args.figure_size.lower().split('x')
+            else:
+                parts = [args.figure_size]
+            fig_dims = tuple(float(x.strip()) for x in parts)
+            if len(fig_dims) != 2:
+                raise ValueError
+        except Exception as e:
+            sys.stderr.write("Error: --figure_size must be two numbers separated by a comma or x, e.g. '8,6' or '8x6'.\n")
+            sys.exit(1)
+    else:
+        fig_dims = (8, 6)
+    sys.stderr.write(f"DEBUG: Using figure size: {fig_dims[0]} x {fig_dims[1]} inches\n")
+    
+    # For ggplot, if data is not already melted, melt if necessary.
+    if not args.melted:
+        if df.shape[1] > 2:
+            if not args.id_vars:
+                sys.stderr.write("Error: For wide data with >2 columns, --id_vars must be provided or use --melted.\n")
+                sys.exit(1)
+            id_vars = [col.strip() for col in args.id_vars.split(',')]
+            if args.value_vars:
+                value_vars = [col.strip() for col in args.value_vars.split(',')]
+            else:
+                value_vars = [col for col in df.columns if col not in id_vars]
+            df = pd.melt(df, id_vars=id_vars, value_vars=value_vars,
+                         var_name="variable", value_name="value")
+    
+    # Convert y column to numeric if possible.
+    if args.y:
+        try:
+            df[args.y] = pd.to_numeric(df[args.y], errors='coerce')
+        except Exception as e:
+            sys.stderr.write(f"Warning: Could not convert y values to numeric: {e}\n")
+    
+    from plotnine import (ggplot, aes, geom_boxplot, geom_bar, geom_point,
+                          geom_histogram, geom_tile, facet_grid, labs, theme, 
+                          scale_x_log10, scale_y_log10, scale_x_continuous, scale_y_continuous, guides, guide_legend)
+    
+    aes_dict = {}
+    if args.x:
+        aes_dict['x'] = args.x
+    if args.y:
+        aes_dict['y'] = args.y
+    if args.fill:
+        aes_dict['fill'] = args.fill
+    p = ggplot(df, aes(**aes_dict))
+    
+    if args.geom == "boxplot":
+        if not args.y:
+            sys.stderr.write("Error: --y must be provided for boxplot.\n")
+            sys.exit(1)
+        p += geom_boxplot()
+    elif args.geom == "bar":
+        if args.y:
+            p += geom_bar(stat="identity", position="dodge")
+        else:
+            p += geom_bar()
+    elif args.geom == "point":
+        if not args.y:
+            sys.stderr.write("Error: --y must be provided for point plot.\n")
+            sys.exit(1)
+        p += geom_point()
+    elif args.geom == "hist":
+        if not args.x:
+            sys.stderr.write("Error: --x must be provided for histogram.\n")
+            sys.exit(1)
+        p += geom_histogram()
+    elif args.geom == "tile":
+        p += geom_tile()
+    elif args.geom == "pie":
+        sys.stderr.write("Error: For pie charts, please use the 'matplotlib' subcommand instead.\n")
+        sys.exit(1)
+    else:
+        sys.stderr.write(f"Error: Unsupported geom '{args.geom}' for ggplot.\n")
+        sys.exit(1)
+    
+    if args.facet:
+        p += facet_grid(args.facet, scales='free')
+    
+    label_dict = {}
+    if args.title:
+        label_dict['title'] = args.title
+    if args.xlab:
+        label_dict['x'] = args.xlab
+    if args.ylab:
+        label_dict['y'] = args.ylab
+    if label_dict:
+        p += labs(**label_dict)
+    
+    if args.xlim:
+        try:
+            x_limits = [float(x.strip()) for x in args.xlim.split(',')]
+            if len(x_limits) != 2:
+                raise ValueError
+        except:
+            sys.stderr.write("Error: --xlim must be two numbers separated by a comma, e.g. '0,100'.\n")
+            sys.exit(1)
+        p += scale_x_continuous(limits=x_limits)
+    if args.ylim:
+        try:
+            y_limits = [float(x.strip()) for x in args.ylim.split(',')]
+            if len(y_limits) != 2:
+                raise ValueError
+        except:
+            sys.stderr.write("Error: --ylim must be two numbers separated by a comma, e.g. '0,100'.\n")
+            sys.exit(1)
+        p += scale_y_continuous(limits=y_limits)
+    if args.x_scale_log:
+        p += scale_x_log10()
+    if args.y_scale_log:
+        p += scale_y_log10()
+    
+    p += theme_nizar()
+    p += guides(fill=guide_legend(ncol=1))
+    
+    try:
+        p.save(filename=args.output, width=fig_dims[0], height=fig_dims[1], format="pdf")
+    except Exception as e:
+        sys.stderr.write(f"Error saving PDF: {e}\n")
+        sys.exit(1)
+    sys.exit(0)
+
+def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name):
+    # Determine figure size.
+    if hasattr(args, "figure_size") and args.figure_size:
+        try:
+            if ',' in args.figure_size:
+                parts = args.figure_size.split(',')
+            elif 'x' in args.figure_size.lower():
+                parts = args.figure_size.lower().split('x')
+            else:
+                parts = [args.figure_size]
+            fig_dims = tuple(float(x.strip()) for x in parts)
+            if len(fig_dims) != 2:
+                raise ValueError
+        except Exception as e:
+            sys.stderr.write("Error: --figure_size must be two numbers separated by a comma or 'x'.\n")
+            sys.exit(1)
+    else:
+        fig_dims = (8, 6)
+    sys.stderr.write(f"DEBUG: Using figure size: {fig_dims[0]} x {fig_dims[1]} inches\n")
+    
+    import matplotlib.pyplot as plt
+    try:
+        import scienceplots
+        plt.style.use(['science'])
+    except ImportError:
+        pass
+    
+    mode = args.mode.lower()  # Expected to be 'venn2' or 'venn3'
+    if not args.colnames:
+        sys.stderr.write("Error: For matplotlib plotting, --colnames is required.\n")
+        sys.exit(1)
+    colnames = [col.strip() for col in args.colnames.split(',')]
+    if mode == "venn2":
+        if len(colnames) != 2:
+            sys.stderr.write("Error: For venn2, --colnames must contain exactly 2 names.\n")
+            sys.exit(1)
+    elif mode == "venn3":
+        if len(colnames) != 3:
+            sys.stderr.write("Error: For venn3, --colnames must contain exactly 3 names.\n")
+            sys.exit(1)
+    
+    # Use the custom venn_diagram function.
+    try:
+        fig, segment_table = venn_diagram(df, colnames)
+    except Exception as e:
+        sys.stderr.write(f"Error generating venn diagram: {e}\n")
+        sys.exit(1)
+    
+    if args.title:
+        plt.title(args.title)
+    fig.savefig(args.output, format="pdf", bbox_inches='tight')
+    sys.exit(0)
+
+def _handle_melt(df, args, input_sep, is_header_present, row_idx_col_name):
+    id_vars = [col.strip() for col in args.id_vars.split(',')]
+    if args.value_vars:
+        value_vars = [col.strip() for col in args.value_vars.split(',')]
+    else:
+        value_vars = [col for col in df.columns if col not in id_vars]
+    return pd.melt(df, id_vars=id_vars, value_vars=value_vars,
+                   var_name=args.var_name, value_name=args.value_name)
+
+def _handle_unmelt(df, args, input_sep, is_header_present, row_idx_col_name):
+    try:
+        unmelted_df = df.pivot(index=args.index, columns=args.columns, values=args.value)
+        unmelted_df = unmelted_df.reset_index()
+        unmelted_df.columns = [col if not isinstance(col, tuple) else '_'.join(map(str, col)).strip('_')
+                                for col in unmelted_df.columns.values]
+    except Exception as e:
+        sys.stderr.write(f"Error in unmelt operation: {e}\n")
+        sys.exit(1)
+    return unmelted_df
+
+# --------------------------
+# Custom Functions for Plotting
+# --------------------------
+import plotnine as p9
+def theme_nizar():
+    return p9.theme(
+        panel_background=p9.element_rect(fill="white"),
+        panel_grid_major=p9.element_line(linetype='dotted', color='grey', size=0.2),
+        panel_grid_minor=p9.element_line(linetype='dotted', color='grey', size=0.5),
+        panel_border=p9.element_rect(color='grey', fill=None),
+        legend_title=p9.element_text(weight="bold"),
+        legend_direction="horizontal",
+        legend_text=p9.element_text(size=6),
+        axis_text_x=p9.element_text(rotation=25, hjust=1, size=6),
+        axis_text_y=p9.element_text(size=8),
+        legend_position='top',
+        strip_text=p9.element_text(size=6)
+    )
+
+def venn_diagram(df, colnames):
+    """
+    Build a Venn diagram from the input DataFrame using the supplied column names.
+    It converts the specified columns to binary indicators (True if value > 0) and then
+    computes the counts for each segment.
+    """
+    num_cols = len(colnames)
+    df_binary = (df[colnames].astype(float) > 0).astype(int)
+    segment_data = []
+    segment_counts = {}
+    col_masks = [df_binary[col].astype(bool) for col in colnames]
+    for i in range(1, 2**num_cols):
+        binary_pattern = bin(i)[2:].zfill(num_cols)
+        current_mask = pd.Series(True, index=df_binary.index)
+        segment_name_parts = []
+        for j, col_name in enumerate(colnames):
+            if binary_pattern[j] == '1':
+                current_mask &= col_masks[j]
+                segment_name_parts.append(col_name)
+            else:
+                current_mask &= ~col_masks[j]
+        count = df_binary[current_mask].shape[0]
+        if count > 0:
+            segment_key = binary_pattern
+            segment_counts[segment_key] = count
+            if len(segment_name_parts) == num_cols:
+                segment_desc = " & ".join(segment_name_parts)
+            elif len(segment_name_parts) == 1:
+                segment_desc = segment_name_parts[0]
+            else:
+                segment_desc = " & ".join(segment_name_parts)
+            segment_data.append({
+                'Segment': segment_desc,
+                'Count': count,
+                'Percentage': 0
+            })
+    union_mask = (df_binary[colnames].sum(axis=1) > 0)
+    total_elements_in_union = df_binary[union_mask].shape[0]
+    for seg_dict in segment_data:
+        seg_dict['Percentage'] = (seg_dict['Count'] / total_elements_in_union * 100) if total_elements_in_union > 0 else 0
+    segment_table = pd.DataFrame(segment_data)
+    segment_table = segment_table.sort_values(by='Count', ascending=False).reset_index(drop=True)
+    # Create the figure and axis.
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(10, 8))
+    venn_obj = None
+    if num_cols == 2:
+        venn_subsets = (segment_counts.get('10', 0), segment_counts.get('01', 0), segment_counts.get('11', 0))
+        try:
+            from matplotlib_venn import venn2
+        except ImportError:
+            sys.stderr.write("Error: matplotlib_venn is required for venn2 plots.\n")
+            sys.exit(1)
+        venn_obj = venn2(subsets=venn_subsets, set_labels=colnames, ax=ax)
+        label_order_ids = ['10', '01', '11']
+    elif num_cols == 3:
+        venn_subsets = (segment_counts.get('100', 0), segment_counts.get('010', 0), segment_counts.get('110', 0),
+                        segment_counts.get('001', 0), segment_counts.get('101', 0), segment_counts.get('011', 0),
+                        segment_counts.get('111', 0))
+        try:
+            from matplotlib_venn import venn3
+        except ImportError:
+            sys.stderr.write("Error: matplotlib_venn is required for venn3 plots.\n")
+            sys.exit(1)
+        venn_obj = venn3(subsets=venn_subsets, set_labels=colnames, ax=ax)
+        label_order_ids = ['100', '010', '110', '001', '101', '011', '111']
+    for label_id in label_order_ids:
+        if venn_obj.get_label_by_id(label_id):
+            count = segment_counts.get(label_id, 0)
+            percentage = 0.0
+            temp_segment_name_parts = []
+            for j, col_name in enumerate(colnames):
+                if label_id[j] == '1':
+                    temp_segment_name_parts.append(col_name)
+            if len(temp_segment_name_parts) == num_cols:
+                temp_segment_desc = " & ".join(temp_segment_name_parts)
+            elif len(temp_segment_name_parts) == 1:
+                temp_segment_desc = temp_segment_name_parts[0]
+            else:
+                temp_segment_desc = " & ".join(temp_segment_name_parts)
+            matched_row = segment_table[segment_table['Segment'] == temp_segment_desc]
+            if not matched_row.empty:
+                percentage = matched_row['Percentage'].iloc[0]
+            venn_obj.get_label_by_id(label_id).set_text(f'{count}\n({percentage:.1f}%)')
+            venn_obj.get_label_by_id(label_id).set_fontsize(10)
+    ax.set_title(f"Venn Diagram of Clonotype Overlap in {', '.join(colnames)}", fontsize=14)
+    plt.close(fig)
+    return fig, segment_table
+
 # --------------------------
 # Dispatch Table
 # --------------------------
@@ -770,24 +1132,25 @@ OPERATION_HANDLERS = {
     "viewheader": _handle_viewheader,
     "row_insert": _handle_row_insert,
     "row_drop": _handle_row_drop,
+    "transpose": _handle_transpose,
+    "ggplot": _handle_ggplot,
+    "matplotlib": _handle_matplotlib,
+    "melt": _handle_melt,
+    "unmelt": _handle_unmelt,
 }
 
 # --------------------------
 # Input/Output Functions
 # --------------------------
 def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
-    """Reads input into a DataFrame or a generator for chunked processing."""
     raw_first_line = []
-    input_stream = args.file  # use file provided by -f/--file
-
-    # Process ignore-lines option: if provided, remove leading '^' if present.
+    input_stream = args.file
     comment_char = None
     if args.ignore_lines:
         if args.ignore_lines.startswith('^'):
             comment_char = args.ignore_lines[1:]
         else:
             comment_char = args.ignore_lines
-
     if use_chunked:
         try:
             reader = pd.read_csv(input_stream, sep=input_sep, header=header_param, dtype=str,
@@ -836,7 +1199,6 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
 
 def _write_output_data(data, args, input_sep, is_header_present, header_printed):
     try:
-        # For operations such as view we do not output CSV formatting.
         if args.operation in ["view", "viewheader", "value_counts"]:
             return header_printed
         if isinstance(data, pd.DataFrame):
@@ -846,7 +1208,7 @@ def _write_output_data(data, args, input_sep, is_header_present, header_printed)
                 index=False,
                 header=is_header_present,
                 encoding='utf-8',
-                quoting=csv.QUOTE_NONE,  # disable automatic quoting
+                quoting=csv.QUOTE_NONE,
                 escapechar='\\'
             )
             return True
@@ -886,17 +1248,15 @@ def main():
         parser.print_help()
         sys.exit(0)
     
-    # Use --noheader to determine the header handling.
     if args.noheader:
         header_param = None
         is_header_present = False
     else:
-        header_param = 0  # Use the first row as header.
+        header_param = 0
         is_header_present = True
 
     input_sep = codecs.decode(args.sep, 'unicode_escape')
     
-    # In low-memory mode, some operations (such as sort) are not allowed.
     if args.lowmem and args.operation == "sort":
         sys.stderr.write("Error: 'sort' operation cannot be performed in low-memory mode (--lowmem).\n")
         sys.exit(1)
@@ -904,7 +1264,6 @@ def main():
     lowmem_ops = ["value_counts", "numeric_map", "grep", "tr", "strip", "prefix_add", "cleanup_values", "regex_capture"]
     use_chunked = args.lowmem and args.operation in lowmem_ops
 
-    # Special handling for low-memory row operations.
     lowmem_row = False
     if args.operation in ["row_insert", "row_drop"]:
         if args.row_idx == 0:
@@ -941,7 +1300,6 @@ def main():
             sys.exit(0)
 
     df_or_chunks, raw_first_line = _read_input_data(args, input_sep, header_param, is_header_present, use_chunked)
-
     row_idx_col = None
     if args.row_index:
         if use_chunked:
@@ -971,7 +1329,6 @@ def main():
         sys.stderr.write(f"Error: Unsupported operation '{args.operation}'.\n")
         sys.exit(1)
 
-    # Dispatch operations with the correct number of arguments.
     if use_chunked:
         for chunk in df_or_chunks:
             if not is_header_present:
@@ -1010,10 +1367,8 @@ def main():
             with open(args.word_file, 'r', encoding='utf-8') as f:
                 word_list = [line.strip() for line in f if line.strip()]
             matched = state.get("matched_words", set()) if state else set()
-            missing = set(word_list) - matched
-            sys.stderr.write("Words not seen in input: " + ", ".join(sorted(missing)) + "\n")
+            sys.stderr.write("Words not seen in input: " + ", ".join(sorted(matched)) + "\n")
         _write_output_data(processed_df, args, input_sep, is_header_present, header_printed)
 
 if __name__ == "__main__":
     main()
-
