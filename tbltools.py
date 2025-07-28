@@ -23,7 +23,7 @@ def _clean_string_for_header_and_data(s):
     s = s.replace(' ', '_')
     s = s.replace('.', '_')
     s = re.sub(r'[^\w_]', '', s)
-    s = re.sub(r'_{2,}', '_', s) # tr -squeeze
+    s = re.sub(r'_{2,}', '_', s)  # tr -squeeze
     return s
 
 def get_unique_header(candidate, df):
@@ -35,6 +35,11 @@ def get_unique_header(candidate, df):
     while f"{base}_{i}" in df.columns:
         i += 1
     return f"{base}_{i}"
+
+def remove_ansi(text):
+    """Remove ANSI escape sequences from the given text."""
+    ansi_escape = re.compile(r'\x1B[@-_][0-?]*[ -/]*[@-~]')
+    return ansi_escape.sub('', text)
 
 def _print_verbose(args, message):
     """Prints verbose output if enabled."""
@@ -77,6 +82,34 @@ def _parse_multiple_columns_arg(values, df_columns, is_header_present, arg_name=
         except (ValueError, IndexError) as e:
             raise type(e)(f"Error parsing {arg_name} '{values}': {e}")
     return col_indices
+
+# --------------------------
+# Global Numeric Formatter
+# --------------------------
+def _format_numeric_columns(df):
+    """
+    For each column in a DataFrame, if every non-null value in that column is convertible
+    to a numeric type then:
+       - If all such values are effectively integers (within a small threshold), cast
+         the column to a pandas nullable integer type.
+       - Otherwise, round numeric values to two decimal places.
+    If any non-null value is not convertible to a number, the column is left unchanged.
+    """
+    threshold = 1e-8
+    for col in df.columns:
+        series = df[col]
+        # Convert values to numeric where possible (non-convertible become NaN).
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        # Check if every non-null (original) value was convertible.
+        if series.dropna().shape[0] != numeric_series.dropna().shape[0]:
+            # At least one non-null value is not numeric; leave the column unchanged.
+            continue
+        # Now every non-null value is numeric.
+        if numeric_series.dropna().apply(lambda x: abs(x - round(x)) < threshold).all():
+            df[col] = numeric_series.astype("Int64")
+        else:
+            df[col] = numeric_series.round(2)
+    return df
 
 # --------------------------
 # Argument Parser
@@ -165,22 +198,24 @@ def _setup_arg_parser():
                                help="Report words from the word file not found in the input.")
     parser_grep.add_argument("-v", "--invert", action="store_true",
                                help="Invert match: select rows that do NOT match the specified criteria.")
-    
-    # SUMMARIZE
-    parser_summarize = subparsers.add_parser(
-        "summarize",
-        help="Group and summarize data using common aggregators (sum, mean, value_counts, entropy)."
+
+    # AGGR
+    parser_aggr = subparsers.add_parser(
+        "aggr",
+        help="Group and aggregate data via common functions: sum, mean, list, value_counts, entropy."
     )
-    parser_summarize.add_argument("--group", required=True,
-                                  help="Comma-separated list of column(s) to group by.")
-    parser_summarize.add_argument("--cols",
-                                  help="Comma-separated list of columns to aggregate (not needed for melted input).")
-    parser_summarize.add_argument("--agg", required=True,
-                                  help="Aggregator to apply. Supported: 'sum', 'mean', 'value_counts', 'entropy'.")
-    parser_summarize.add_argument("--normalize", action="store_true",
-                                  help="For value_counts, normalize the frequencies within each group.")
-    parser_summarize.add_argument("--melted", action="store_true",
-                                  help="Indicate that the input is in long (melted) format.")
+    parser_aggr.add_argument("--group", required=True,
+                             help="Comma-separated list of column(s) to group by.")
+    # Accept both --cols and --columns as synonyms.
+    parser_aggr.add_argument("--cols", "--columns", dest="cols", required=True,
+                             help="Comma-separated list of column(s) to aggregate (or '*' for all non-group columns).")
+    parser_aggr.add_argument("--agg", required=True,
+                             help="Aggregator to apply. Supported: 'sum', 'mean', 'list', 'value_counts', 'entropy'.")
+    parser_aggr.add_argument("--normalize", action="store_true",
+                             help="For value_counts, normalize the frequencies within each group.")
+    parser_aggr.add_argument("--melted", action="store_true",
+                             help="Indicate that the input is in melted (long) format.")
+
     
     # SPLIT
     parser_split = subparsers.add_parser("split", help="Split a column. Required: --column and -d/--delimiter.")
@@ -253,19 +288,23 @@ def _setup_arg_parser():
     parser_regex_capture.add_argument("--new-header", default="_captured", help="Suffix or new header for the captured column (default: '_captured').")
     
     # VIEW
-    # In the view subcommand section:
     parser_view = subparsers.add_parser("view", help="Display the data in a formatted table.")
     parser_view.add_argument("--max-rows", type=int, default=20, help="Maximum number of rows to display (default: 20).")
     parser_view.add_argument("--max-cols", type=int, default=None, help="Maximum number of columns to display (default: all columns).")
     parser_view.add_argument("--precision-long", action="store_true",
-                         help="Display numeric columns with full precision (do not round to 2 decimal places).")
-
+                               help="Display numeric columns with full precision (do not round to 2 decimal places).")
+    # New options for view:
+    parser_view.add_argument("--cleanup-numbers", action="store_true",
+                               help="Apply numeric cleanup (remove trailing decimals/round numbers) to the output.")
+    parser_view.add_argument("--no-pretty-print", dest="pretty_print", action="store_false",
+                               help="Output as plain TSV without pretty-print alignment.")
+    parser_view.set_defaults(pretty_print=True)
+    
     # CUT (Enhanced)
     parser_cut = subparsers.add_parser("cut", help="Cut/select columns. Provide either a regex pattern or, if --list is specified, a list of column names.")
     parser_cut.add_argument("pattern", nargs="?", default=None,
                         help=("Either a regex pattern for matching column names "
-                              "or, when --list is specified, a comma-separated list "
-                              "of column names (or a file containing column names)."))
+                              "or, when --list is specified, a comma-separated list of column names (or a file containing column names)."))
     parser_cut.add_argument("--regex", action="store_true",
                         help="Interpret the supplied pattern as a regex (default for --list is literal matching).")
     parser_cut.add_argument("--list", action="store_true",
@@ -283,7 +322,6 @@ def _setup_arg_parser():
     parser_row_drop = subparsers.add_parser("row_drop", help="Delete row(s) at a specified 1-indexed position. Use -i 0 to drop the header row.")
     parser_row_drop.add_argument("-i", "--row-idx", type=int, required=True, help="Row position to drop (1-indexed, 0 drops the header).")
     
-    # New Subparsers for Plotting
     # ggplot subcommand using Plotnine
     parser_ggplot = subparsers.add_parser("ggplot", help="Generate a ggplot using Plotnine and save to a PDF file.")
     parser_ggplot.add_argument("--geom", required=True, choices=["boxplot", "bar", "point", "hist", "tile", "pie"],
@@ -328,57 +366,33 @@ def _setup_arg_parser():
     parser_unmelt.add_argument("--columns", required=True, help="Column name that contains variable names (to become new columns).")
     parser_unmelt.add_argument("--value", required=True, help="Column name that contains the values.")
     
-    # --------------------------
     # NEW: ADD_METADATA
-    # --------------------------
     parser_add_metadata = subparsers.add_parser("add_metadata", help="Merge a metadata file into the main table based on key columns.")
     parser_add_metadata.add_argument("--meta", required=True, help="Path to the metadata file (CSV).")
     parser_add_metadata.add_argument("--key_column_in_input", required=True, help="Key column (name or 1-indexed) in the input file to join on.")
     parser_add_metadata.add_argument("--key_column_in_meta", required=True, help="Key column (name or 1-indexed) in the metadata file to join on.")
-    
+    parser_add_metadata.add_argument("--meta_sep", default=None,
+    help="Field separator for the metadata file. If not provided, the global --sep is used.")
+
     return parser
 
 # --------------------------
 # Operation Handler Functions
 # --------------------------
-##==
-def _handle_summarize(df, args, input_sep, is_header_present, row_idx_col_name):
-    """
-    Summarize the input table based on group(s), and apply an aggregator function
-    to one or more columns. Supported aggregator functions are:
-      - For numeric data: "sum" and "mean"
-      - For categorical data: "value_counts" and "entropy"
-    Optionally, if the --normalize flag is provided with value_counts, the frequencies
-    are normalized within each group.
-    
-    For wide-format input (default), the user must supply:
-      --group  (e.g., "sample_id")
-      --cols   (e.g., "reads,quality"), but you can also use --cols "*" to use all non-grouping columns.
-      
-    For melted input (long format), the table must contain at least "variable" and "value".
-    Optionally, you can supply --group so that additional id columns are used.
-    
-    Returns:
-       A pandas DataFrame with the summarized output.
-    """
+##===~
+def _handle_aggr(df, args, input_sep, is_header_present, row_idx_col_name):
     import sys
     import pandas as pd
     from scipy.stats import entropy as calculate_entropy
 
-    # -------------------------------
-    # M E L T E D (Long) Format Mode
-    # -------------------------------
     if getattr(args, "melted", False):
-        # Check for required "variable" and "value" columns:
         required_cols = {"variable", "value"}
         if not required_cols.issubset(set(df.columns)):
-            sys.stderr.write("Error: When using --melted, input must have 'variable' and 'value' columns.\n")
+            sys.stderr.write("Error: When using --melted, the input must have 'variable' and 'value' columns.\n")
             sys.exit(1)
-        # If additional grouping is desired, use the --group argument.
         group_cols = []
         if getattr(args, "group", None):
             group_cols = [col.strip() for col in args.group.split(",") if col.strip()]
-        # Always include "variable" to keep track of which field is being aggregated.
         if "variable" not in group_cols:
             group_cols.append("variable")
         agg_func = args.agg.lower()
@@ -388,7 +402,151 @@ def _handle_summarize(df, args, input_sep, is_header_present, row_idx_col_name):
             if not isinstance(grp_keys, tuple):
                 grp_keys = (grp_keys,)
             group_dict = dict(zip(group_cols, grp_keys))
-            # Apply aggregation on the "value" column:
+            series = grp_df["value"]
+            if agg_func in ["sum", "mean"]:
+                try:
+                    series_numeric = pd.to_numeric(series, errors="raise")
+                except Exception as e:
+                    sys.stderr.write(f"Error: Cannot convert 'value' column to numeric for aggregation: {e}\n")
+                    sys.exit(1)
+                result = series_numeric.sum() if agg_func == "sum" else series_numeric.mean()
+                group_dict.update({f"{agg_func}_value": result})
+                summary_rows.append(group_dict)
+            elif agg_func == "list":
+                group_dict.update({"list_value": ",".join(series.astype(str))})
+                summary_rows.append(group_dict)
+            elif agg_func == "value_counts":
+                normalize = getattr(args, "normalize", False)
+                vc = series.value_counts(normalize=normalize).reset_index()
+                if normalize:
+                    vc.columns = ["value", "normalized"]
+                    vc["raw_count"] = series.value_counts(normalize=False).reindex(vc["value"]).values
+                else:
+                    vc.columns = ["value", "count"]
+                for _, row in vc.iterrows():
+                    out = group_dict.copy()
+                    out["aggregated_column"] = "value"
+                    out["value"] = row["value"]
+                    if normalize:
+                        out.update({"raw_count": row["raw_count"], "normalized": row["normalized"]})
+                    else:
+                        out["count"] = row["count"]
+                    summary_rows.append(out)
+            elif agg_func == "entropy":
+                counts = series.value_counts()
+                ent = calculate_entropy(counts)
+                group_dict.update({"entropy": ent})
+                summary_rows.append(group_dict)
+            else:
+                sys.stderr.write(f"Error: Unsupported aggregation function '{agg_func}' for melted data.\n")
+                sys.exit(1)
+        summary_df = pd.DataFrame(summary_rows)
+        return summary_df
+
+    else:
+        if not getattr(args, "group", None):
+            sys.stderr.write("Error: In wide format, you must supply --group to specify grouping variable(s).\n")
+            sys.exit(1)
+        if not getattr(args, "cols", None):
+            sys.stderr.write("Error: In wide format, you must supply --cols with the comma-separated list of columns to aggregate (or '*' for all non-group columns).\n")
+            sys.exit(1)
+        group_cols = [col.strip() for col in args.group.split(",") if col.strip()]
+        if args.cols.strip() in ["*", "all"]:
+            agg_cols = [col for col in df.columns if col not in group_cols]
+        else:
+            agg_cols = [col.strip() for col in args.cols.split(",") if col.strip()]
+        agg_func = args.agg.lower()
+        if agg_func in ["sum", "mean"]:
+            valid_agg_cols = []
+            for col in agg_cols:
+                series_numeric = pd.to_numeric(df[col], errors="coerce")
+                if series_numeric.notna().sum() > 0:
+                    valid_agg_cols.append(col)
+                else:
+                    if getattr(args, "verbose", False):
+                        sys.stderr.write(f"Warning: Skipping non-numeric column '{col}' for aggregator '{agg_func}'.\n")
+            if not valid_agg_cols:
+                sys.stderr.write("Error: No numeric columns found for aggregation.\n")
+                sys.exit(1)
+            for col in valid_agg_cols:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            grouped = df.groupby(group_cols)
+            summary_df = grouped[valid_agg_cols].agg(agg_func).reset_index()
+            rename_dict = {col: f"{agg_func}_{col}" for col in valid_agg_cols}
+            summary_df.rename(columns=rename_dict, inplace=True)
+            return summary_df
+
+        elif agg_func == "list":
+            grouped = df.groupby(group_cols)
+            summary_df = grouped[agg_cols].agg(lambda x: ",".join(x.astype(str))).reset_index()
+            rename_dict = {col: f"list_{col}" for col in agg_cols}
+            summary_df.rename(columns=rename_dict, inplace=True)
+            return summary_df
+
+        elif agg_func in ["value_counts", "entropy"]:
+            summary_rows = []
+            grouped = df.groupby(group_cols)
+            for grp_keys, grp_df in grouped:
+                if not isinstance(grp_keys, tuple):
+                    grp_keys = (grp_keys,)
+                group_dict = dict(zip(group_cols, grp_keys))
+                for col in agg_cols:
+                    series = grp_df[col]
+                    if agg_func == "value_counts":
+                        normalize = getattr(args, "normalize", False)
+                        vc = series.value_counts(normalize=normalize).reset_index()
+                        if normalize:
+                            vc.columns = ["value", "normalized"]
+                            vc["raw_count"] = series.value_counts(normalize=False).reindex(vc["value"]).values
+                        else:
+                            vc.columns = ["value", "count"]
+                        for _, row in vc.iterrows():
+                            out = group_dict.copy()
+                            out["aggregated_column"] = col
+                            out["value"] = row["value"]
+                            if normalize:
+                                out.update({"raw_count": row["raw_count"], "normalized": row["normalized"]})
+                            else:
+                                out["count"] = row["count"]
+                            summary_rows.append(out)
+                    elif agg_func == "entropy":
+                        counts = series.value_counts()
+                        ent = calculate_entropy(counts)
+                        out = group_dict.copy()
+                        out["aggregated_column"] = col
+                        out["entropy"] = ent
+                        summary_rows.append(out)
+            summary_df = pd.DataFrame(summary_rows)
+            return summary_df
+
+        else:
+            sys.stderr.write(f"Error: Unsupported aggregation function '{agg_func}'.\n")
+            sys.exit(1)
+
+##===~
+
+def _handle_summarize_obsolete(df, args, input_sep, is_header_present, row_idx_col_name):
+    # (Obsolete summarization function — not modified here)
+    import sys
+    import pandas as pd
+    from scipy.stats import entropy as calculate_entropy
+    if getattr(args, "melted", False):
+        required_cols = {"variable", "value"}
+        if not required_cols.issubset(set(df.columns)):
+            sys.stderr.write("Error: When using --melted, input must have 'variable' and 'value' columns.\n")
+            sys.exit(1)
+        group_cols = []
+        if getattr(args, "group", None):
+            group_cols = [col.strip() for col in args.group.split(",") if col.strip()]
+        if "variable" not in group_cols:
+            group_cols.append("variable")
+        agg_func = args.agg.lower()
+        summary_rows = []
+        grouped = df.groupby(group_cols)
+        for grp_keys, grp_df in grouped:
+            if not isinstance(grp_keys, tuple):
+                grp_keys = (grp_keys,)
+            group_dict = dict(zip(group_cols, grp_keys))
             series = grp_df["value"]
             if agg_func in ["sum", "mean"]:
                 try:
@@ -426,12 +584,7 @@ def _handle_summarize(df, args, input_sep, is_header_present, row_idx_col_name):
                 sys.exit(1)
         summary_df = pd.DataFrame(summary_rows)
         return summary_df
-
-    # -------------------------------
-    # W I D E  (Normal) Format Mode
-    # -------------------------------
     else:
-        # In wide mode, both --group and --cols are required.
         if not getattr(args, "group", None):
             sys.stderr.write("Error: In wide format, you must supply --group to specify grouping variable(s).\n")
             sys.exit(1)
@@ -439,40 +592,30 @@ def _handle_summarize(df, args, input_sep, is_header_present, row_idx_col_name):
             sys.stderr.write("Error: In wide format, you must supply --cols with the comma-separated list of columns to aggregate (or '*' for all non-group columns).\n")
             sys.exit(1)
         group_cols = [col.strip() for col in args.group.split(",") if col.strip()]
-        # If user supplies '*' for --cols, use all columns except those in group_cols.
         if args.cols.strip() == "*" or args.cols.strip() == "all":
             agg_cols = [col for col in df.columns if col not in group_cols]
         else:
             agg_cols = [col.strip() for col in args.cols.split(",") if col.strip()]
-
         agg_func = args.agg.lower()
         if agg_func in ["sum", "mean"]:
-            # For numeric aggregations, filter out any column that cannot be converted to numeric.
             valid_agg_cols = []
             for col in agg_cols:
-                # Attempt to convert the entire column to numeric.
                 series_numeric = pd.to_numeric(df[col], errors="coerce")
-                # If the entire column is NaN after conversion (i.e. not numeric), then skip.
                 if series_numeric.notna().sum() > 0:
                     valid_agg_cols.append(col)
                 else:
-                    # Optionally: print a warning if in verbose mode.
                     if getattr(args, "verbose", False):
                         sys.stderr.write(f"Warning: Skipping non-numeric column '{col}' for aggregator '{agg_func}'.\n")
             if not valid_agg_cols:
                 sys.stderr.write("Error: No numeric columns found for aggregation.\n")
                 sys.exit(1)
-            # Convert valid columns explicitly to numeric.
             for col in valid_agg_cols:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             grouped = df.groupby(group_cols)
             summary_df = grouped[valid_agg_cols].agg(agg_func).reset_index()
-            # Rename columns to indicate the applied function.
             rename_dict = {col: f"{agg_func}_{col}" for col in valid_agg_cols}
             summary_df.rename(columns=rename_dict, inplace=True)
             return summary_df
-
-        # For categorical aggregations: "value_counts" and "entropy"
         elif agg_func in ["value_counts", "entropy"]:
             summary_rows = []
             grouped = df.groupby(group_cols)
@@ -881,7 +1024,6 @@ def _handle_regex_capture(df, args, input_sep, is_header_present, row_idx_col_na
         raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
     df.insert(len(df.columns), new_header, captured.reset_index(drop=True))
     return df
-
 def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
     import sys
     import pandas as pd
@@ -895,37 +1037,38 @@ def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_f
     
     # Work on a copy of the DataFrame for display formatting.
     disp = df.copy()
-
-    # Unless --precision-long is specified, round numeric columns.
-    if not getattr(args, "precision_long", False):
-        for col in disp.columns:
-            if is_numeric_dtype(disp[col]):
-                # Ensure the column is numeric and then round to 2 decimal places.
-                disp[col] = pd.to_numeric(disp[col], errors='coerce')
-                disp[col] = disp[col].round(2)
-                # If all non-null values are effectively integers, convert column to integer type.
-                if disp[col].dropna().apply(lambda x: abs(x - round(x)) < 1e-8).all():
-                    disp[col] = disp[col].astype("Int64")
+    # Apply numeric cleanup only if --cleanup-numbers was supplied.
+    if getattr(args, "cleanup_numbers", False):
+         disp = _format_numeric_columns(disp)
     
-    # If a row-index column was specified, move it to the beginning.
     if row_idx_col_name and row_idx_col_name in disp.columns:
         cols = [row_idx_col_name] + [col for col in disp.columns if col != row_idx_col_name]
         disp = disp[cols]
         _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
     
-    # Use a float_format callback if we want 2-digit precision (the default).
-    float_fmt = (lambda x: f"{x:.2f}") if not getattr(args, "precision_long", False) else None
+    # Depending on the pretty_print flag, output the DataFrame accordingly.
+    if getattr(args, "pretty_print", True):
+         # Pretty print: use to_string for nicely aligned output.
+         sys.stdout.write(disp.to_string(index=True, header=is_header_present) + '\n')
+    else:
+         # Plain TSV output: use to_csv to preserve TSV formatting.
+         disp.to_csv(
+             sys.stdout,
+             sep=input_sep,
+             index=False,
+             header=is_header_present,
+             encoding='utf-8',
+             quoting=csv.QUOTE_NONE,
+             escapechar='\\'
+         )
     
-    # Print the DataFrame to stdout.
-    sys.stdout.write(disp.to_string(index=True, header=is_header_present, float_format=float_fmt) + '\n')
-    
-    # Reset display options.
     pd.reset_option('display.max_rows')
     pd.reset_option('display.max_columns')
     pd.reset_option('display.width')
     pd.reset_option('display.colheader_justify')
     
     sys.exit(0)
+
 
 def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
     if args.list:
@@ -971,27 +1114,54 @@ def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
             _print_verbose(args, f"Columns selected: {selected}.")
         return df
 
+####===
 def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line):
-    _print_verbose(args, "Listing header names with 1-indexed positions.")
-    out_lines = []
-    if df.empty and df.columns.size:
-        for i, col in enumerate(df.columns):
-            out_lines.append(f"{i+1}\t{col}")
-    elif not df.empty:
-        cols = list(df.columns)
-        if not is_header_present and raw_first_line:
-            for i, val in enumerate(raw_first_line):
-                indicator = " (Row Index)" if row_idx_col_name and cols[i] == row_idx_col_name else ""
-                out_lines.append(f"{i+1}\t{val}{indicator}")
+    import sys
+
+    _print_verbose(args, "Displaying header names with first data row.")
+
+    if is_header_present:
+        headers = list(df.columns)
+        if not df.empty:
+            first_data_row = [str(x) for x in df.iloc[0].tolist()]
         else:
-            for i, col in enumerate(cols):
-                indicator = " (Row Index)" if row_idx_col_name and col == row_idx_col_name else ""
-                out_lines.append(f"{i+1}\t{col}{indicator}")
-    if not out_lines and is_header_present:
-        sys.stderr.write("No headers found. The input might be empty or malformed.\n")
+            first_data_row = [""] * len(headers)
     else:
-        sys.stdout.write("\n".join(out_lines) + '\n')
+        headers = raw_first_line if raw_first_line else []
+        if not df.empty:
+            first_data_row = [str(x) for x in df.iloc[0].tolist()]
+        else:
+            first_data_row = [""] * len(headers)
+
+    if not headers:
+        sys.stderr.write("No valid header found.\n")
+        sys.exit(1)
+    if not first_data_row:
+        sys.stderr.write("No valid data row found.\n")
+        sys.exit(1)
+
+    max_header_len = max(len(header.strip()) for header in headers)
+    max_value_len = 0
+    for entry in first_data_row:
+        entry = entry.strip()
+        display_entry = (entry[:40] + '...[truncated]') if len(entry) > 40 else entry
+        max_value_len = max(max_value_len, len(display_entry))
+
+    header_idx_len = len(str(len(headers)))
+    header_format = f"{{:<{header_idx_len}}} | {{:>{max_header_len}}} | {{:<{max_value_len}}}"
+    sep_line = "-" * (header_idx_len + 1) + "+" + "-" * (max_header_len + 2) + "+" + "-" * (max_value_len + 2)
+
+    print(sep_line)
+    for i, (header, entry) in enumerate(zip(headers, first_data_row)):
+        header = header.strip()
+        entry = entry.strip()
+        display_entry = (entry[:40] + '...[truncated]') if len(entry) > 40 else entry
+        print(header_format.format(i + 1, header, display_entry))
+        print(sep_line)
+
     sys.exit(0)
+
+####==
 
 def _handle_row_insert(df, args, input_sep, is_header_present, row_idx_col_name):
     insert_pos = args.row_idx - 1  # 0-indexed
@@ -1028,7 +1198,6 @@ def _handle_row_drop(df, args, input_sep, is_header_present, row_idx_col_name):
 # New Plot Handlers
 #==
 def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
-    # Determine figure size.
     if hasattr(args, "figure_size") and args.figure_size:
         try:
             if ',' in args.figure_size:
@@ -1047,14 +1216,9 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
         fig_dims = (8, 6)
     sys.stderr.write(f"DEBUG: Using figure size: {fig_dims[0]} x {fig_dims[1]} inches\n")
     
-    # --- New Feature: Sanitize Column Names ---
-    # By default, replace all '.' in column names with '_' so that plotnine does not misinterpret them.
-    # Users can disable this by providing --dont_replace_dots_in_colnames on the command line.
     if not getattr(args, "dont_replace_dots_in_colnames", False):
-        # Build a mapping from original names to their sanitized (dot-replaced) version.
         col_mapping = {col: col.replace(".", "_") for col in df.columns}
         df = df.rename(columns=col_mapping)
-        # Update plotting aesthetics if they refer to a column that was modified.
         if args.x:
             args.x = col_mapping.get(args.x, args.x)
         if args.y:
@@ -1062,13 +1226,10 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
         if args.fill:
             args.fill = col_mapping.get(args.fill, args.fill)
         if args.facet:
-            # Assume a simple facet formula like "col1 ~ col2" (whitespaces tolerated)
             facet_cols = [x.strip() for x in args.facet.split("~")]
             sanitized_facet = " ~ ".join(col_mapping.get(col, col) for col in facet_cols)
             args.facet = sanitized_facet
-    # ------------------------------------------------
-
-    # For ggplot, if data is not already melted, melt if necessary.
+    
     if not args.melted:
         if df.shape[1] > 2:
             if not args.id_vars:
@@ -1082,7 +1243,6 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
             df = pd.melt(df, id_vars=id_vars, value_vars=value_vars,
                          var_name="variable", value_name="value")
     
-    # Convert y column to numeric if possible.
     if args.y:
         try:
             df[args.y] = pd.to_numeric(df[args.y], errors='coerce')
@@ -1179,7 +1339,6 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
 
 #==
 def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name):
-    # Determine figure size.
     if hasattr(args, "figure_size") and args.figure_size:
         try:
             if ',' in args.figure_size:
@@ -1205,7 +1364,7 @@ def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name)
     except ImportError:
         pass
     
-    mode = args.mode.lower()  # Expected to be 'venn2' or 'venn3'
+    mode = args.mode.lower()
     if not args.colnames:
         sys.stderr.write("Error: For matplotlib plotting, --colnames is required.\n")
         sys.exit(1)
@@ -1219,7 +1378,6 @@ def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name)
             sys.stderr.write("Error: For venn3, --colnames must contain exactly 3 names.\n")
             sys.exit(1)
     
-    # Use the custom venn_diagram function.
     try:
         fig, segment_table = venn_diagram(df, colnames)
     except Exception as e:
@@ -1252,27 +1410,59 @@ def _handle_unmelt(df, args, input_sep, is_header_present, row_idx_col_name):
     return unmelted_df
 
 # --------------------------
-# NEW: ADD_METADATA Handler
+# ADD_METADATA Handler
 # --------------------------
 def _handle_add_metadata(df, args, input_sep, is_header_present, row_idx_col_name):
-    # This operation does not support low-memory mode because we need to join the full DataFrame.
+    import sys
+    import pandas as pd
+    import csv
+    import codecs
+
     if args.lowmem:
         sys.stderr.write("Error: 'add_metadata' operation does not support low-memory mode (--lowmem).\n")
         sys.exit(1)
+
+    meta_sep_raw = getattr(args, "meta_sep", None) or input_sep
+    meta_sep = codecs.decode(meta_sep_raw, 'unicode_escape')
+
     try:
-        meta_df = pd.read_csv(args.meta, sep=input_sep, dtype=str)
+        meta_df = pd.read_csv(args.meta, sep=meta_sep, dtype=str, quoting=csv.QUOTE_NONE, escapechar='\\')
     except Exception as e:
         sys.stderr.write(f"Error reading metadata file '{args.meta}': {e}\n")
         sys.exit(1)
-    # Parse key column for input.
+
+    _print_verbose(args, f"Metadata file head:\n{meta_df.head().to_string()}")
+
+    df.columns = df.columns.astype(str).str.strip()
+    meta_df.columns = meta_df.columns.astype(str).str.strip()
+
     key_input_idx = _parse_column_arg(args.key_column_in_input, df.columns, is_header_present, "key_column_in_input")
     key_input = df.columns[key_input_idx]
-    # For metadata, assume it has a header.
     key_meta_idx = _parse_column_arg(args.key_column_in_meta, meta_df.columns, True, "key_column_in_meta")
     key_meta = meta_df.columns[key_meta_idx]
-    
+
+    df[key_input] = df[key_input].astype(str).str.strip().str.upper()
+    meta_df[key_meta] = meta_df[key_meta].astype(str).apply(remove_ansi).str.strip().str.upper()
+
     _print_verbose(args, f"Merging metadata: joining input column '{key_input}' with metadata column '{key_meta}'.")
-    merged_df = df.merge(meta_df, how='left', left_on=key_input, right_on=key_meta)
+
+    merged_df = df.merge(meta_df, how='left',
+                         left_on=key_input,
+                         right_on=key_meta,
+                         suffixes=("", "_meta"))
+
+    to_drop = []
+    for col in merged_df.columns:
+        if col.endswith("_meta"):
+            base = col[:-5]
+            if base in merged_df.columns:
+                merged_df[base] = merged_df[col].combine_first(merged_df[base])
+                to_drop.append(col)
+            else:
+                merged_df.rename(columns={col: base}, inplace=True)
+    if to_drop:
+        merged_df.drop(columns=to_drop, inplace=True)
+
     return merged_df
 
 # --------------------------
@@ -1295,11 +1485,6 @@ def theme_nizar():
     )
 
 def venn_diagram(df, colnames):
-    """
-    Build a Venn diagram from the input DataFrame using the supplied column names.
-    It converts the specified columns to binary indicators (True if value > 0) and then
-    computes the counts for each segment.
-    """
     num_cols = len(colnames)
     df_binary = (df[colnames].astype(float) > 0).astype(int)
     segment_data = []
@@ -1336,7 +1521,6 @@ def venn_diagram(df, colnames):
         seg_dict['Percentage'] = (seg_dict['Count'] / total_elements_in_union * 100) if total_elements_in_union > 0 else 0
     segment_table = pd.DataFrame(segment_data)
     segment_table = segment_table.sort_values(by='Count', ascending=False).reset_index(drop=True)
-    # Create the figure and axis.
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(10, 8))
     venn_obj = None
@@ -1412,8 +1596,8 @@ OPERATION_HANDLERS = {
     "matplotlib": _handle_matplotlib,
     "melt": _handle_melt,
     "unmelt": _handle_unmelt,
-    "summarize": _handle_summarize,
-    "add_metadata": _handle_add_metadata  # NEW operation mapping
+    "aggr": _handle_aggr,
+    "add_metadata": _handle_add_metadata
 }
 
 # --------------------------
@@ -1476,6 +1660,9 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
 
 def _write_output_data(data, args, input_sep, is_header_present, header_printed):
     try:
+        # Before outputting, if data is a DataFrame, apply uniform numeric formatting.
+        if isinstance(data, pd.DataFrame):
+            data = _format_numeric_columns(data)
         if args.operation in ["view", "viewheader", "value_counts"]:
             return header_printed
         if isinstance(data, pd.DataFrame):
@@ -1518,6 +1705,93 @@ def _write_output_data(data, args, input_sep, is_header_present, header_printed)
         sys.exit(1)
     return header_printed
 
+def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
+    import sys
+    import pandas as pd
+    from pandas.api.types import is_numeric_dtype
+
+    _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
+    pd.set_option('display.max_rows', args.max_rows)
+    pd.set_option('display.max_columns', args.max_cols)
+    pd.set_option('display.width', None)
+    pd.set_option('display.colheader_justify', 'left')
+    
+    # Work on a copy of the DataFrame for display formatting.
+    disp = df.copy()
+    if not getattr(args, "precision_long", False):
+        # Apply uniform numeric formatting:
+        disp = _format_numeric_columns(disp)
+    
+    if row_idx_col_name and row_idx_col_name in disp.columns:
+        cols = [row_idx_col_name] + [col for col in disp.columns if col != row_idx_col_name]
+        disp = disp[cols]
+        _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
+    
+    # Output using to_string (no float_format needed because numbers are already formatted)
+    sys.stdout.write(disp.to_string(index=True, header=is_header_present) + '\n')
+    
+    pd.reset_option('display.max_rows')
+    pd.reset_option('display.max_columns')
+    pd.reset_option('display.width')
+    pd.reset_option('display.colheader_justify')
+    
+    sys.exit(0)
+
+def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
+    raw_first_line = []
+    input_stream = args.file
+    comment_char = None
+    if args.ignore_lines:
+        if args.ignore_lines.startswith('^'):
+            comment_char = args.ignore_lines[1:]
+        else:
+            comment_char = args.ignore_lines
+    if use_chunked:
+        try:
+            reader = pd.read_csv(input_stream, sep=input_sep, header=header_param, dtype=str,
+                                 comment=comment_char,
+                                 chunksize=CHUNK_SIZE, iterator=True)
+            first_chunk = next(reader)
+            if first_chunk.empty and args.operation not in ["viewheader", "view", "value_counts", "regex_capture"]:
+                sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires non-empty data.\n")
+                sys.exit(1)
+            if not is_header_present:
+                first_chunk.columns = pd.Index(range(first_chunk.shape[1]))
+            def generator():
+                yield first_chunk
+                for chunk in reader:
+                    yield chunk
+            return generator(), raw_first_line
+        except (StopIteration, pd.errors.EmptyDataError):
+            sys.stderr.write(f"Warning: Input is empty. Cannot perform '{args.operation}'.\n")
+            sys.exit(0)
+        except Exception as e:
+            sys.stderr.write(f"Error reading input in low-memory mode: {e}\n")
+            sys.exit(1)
+    else:
+        try:
+            content = input_stream.read()
+            if not content.strip() and args.operation not in ["viewheader", "view", "value_counts"]:
+                sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires data.\n")
+                sys.exit(1)
+            if not content.strip():
+                return pd.DataFrame(columns=[]), raw_first_line
+            csv_io = StringIO(content)
+            if not is_header_present:
+                pos = csv_io.tell()
+                first_line = csv_io.readline().strip()
+                raw_first_line = first_line.split(input_sep) if first_line else []
+                csv_io.seek(pos)
+            df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str, comment=comment_char)
+            return df, raw_first_line
+        except pd.errors.EmptyDataError:
+            df = pd.DataFrame(columns=[])
+            _print_verbose(args, "Empty input; proceeding with an empty DataFrame.")
+            return df, raw_first_line
+        except Exception as e:
+            sys.stderr.write(f"Error reading input data: {e}\n")
+            sys.exit(1)
+
 def main():
     parser = _setup_arg_parser()
     args = parser.parse_args()
@@ -1525,7 +1799,6 @@ def main():
         parser.print_help()
         sys.exit(0)
     
-    # Disallow low-memory mode for operations that require merging the entire table.
     if args.operation == "add_metadata" and args.lowmem:
         sys.stderr.write("Error: 'add_metadata' operation does not support low-memory mode (--lowmem).\n")
         sys.exit(1)
@@ -1654,3 +1927,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    
