@@ -375,13 +375,6 @@ def _setup_arg_parser():
     parser_unmelt.add_argument("--columns", required=True, help="Column name that contains variable names (to become new columns).")
     parser_unmelt.add_argument("--value", required=True, help="Column name that contains the values.")
     
-    # NEW: ADD_METADATA
-    #parser_add_metadata = subparsers.add_parser("add_metadata", help="Merge a metadata file into the main table based on key columns.")
-    #parser_add_metadata.add_argument("--meta", required=True, help="Path to the metadata file (CSV).")
-    #parser_add_metadata.add_argument("--key_column_in_input", required=True, help="Key column (name or 1-indexed) in the input file to join on.")
-    #parser_add_metadata.add_argument("--key_column_in_meta", required=True, help="Key column (name or 1-indexed) in the metadata file to join on.")
-    #parser_add_metadata.add_argument("--meta_sep", default=None,
-    #help="Field separator for the metadata file. If not provided, the global --sep is used.")
 
     parser_concat = subparsers.add_parser(
         "concat",
@@ -1628,7 +1621,6 @@ OPERATION_HANDLERS = {
     "melt": _handle_melt,
     "unmelt": _handle_unmelt,
     "aggr": _handle_aggr,
-    #"add_metadata": _handle_add_metadata,
     "concat": _handle_concat,
     "merge":  _handle_merge,
 }
@@ -1654,9 +1646,6 @@ def main():
         )
         sys.exit(0)
     
-    #if args.operation == "add_metadata" and args.lowmem:
-    #    sys.stderr.write("Error: 'add_metadata' operation does not support low-memory mode (--lowmem).\n")
-    #    sys.exit(1)
     
     if args.noheader:
         header_param = None
