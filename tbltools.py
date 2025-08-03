@@ -9,15 +9,6 @@ from io import StringIO  # For piped input handling with pandas
 from collections import Counter
 import csv  # For CSV formatting
 
-import matplotlib.pyplot as plt
-try:
-    import scienceplots
-    plt.style.use(['science'])
-except ImportError:
-    pass
-
-
-
 # Default chunk size when processing input in low-memory mode.
 CHUNK_SIZE = 10000
 
@@ -128,10 +119,10 @@ def _setup_arg_parser():
         description=(
             "A command-line tool for manipulating table fields.\n\n"
             "Usage:\n"
-            "    tbltool.py [GLOBAL_OPTIONS] <operation> [OPERATION_SPECIFIC_OPTIONS]\n\n"
+            "    tbl.py [GLOBAL_OPTIONS] <operation> [OPERATION_SPECIFIC_OPTIONS]\n\n"
             "Global Options affect how input is read and overall behavior.\n"
             "Operations perform specific data manipulations.\n"
-            "Use 'tbltool.py <operation> --help' for details on each."
+            "Use 'tbl.py <operation> --help' for details on each."
         ),
         formatter_class=argparse.RawTextHelpFormatter
     )
@@ -168,7 +159,7 @@ def _setup_arg_parser():
     )
     
     # Subparsers for operations
-    subparsers = parser.add_subparsers(dest="operation", help="Available operations. Use 'tbltool.py <operation> --help' for details.")
+    subparsers = parser.add_subparsers(dest="operation", help="Available operations. Use 'tbl.py <operation> --help' for details.")
     
     # TRANSPOSE
     parser_transpose = subparsers.add_parser(
@@ -181,15 +172,15 @@ def _setup_arg_parser():
     parser_move.add_argument("-n", "--column", required=True, help="Source column (1-indexed or name).")
     parser_move.add_argument("-j", "--dest-column", required=True, help="Destination column (1-indexed or name).")
     
-    # INSERT_COL
-    parser_insert_col = subparsers.add_parser("insert_col", help="Insert a new column. Required: --column and -v/--value.")
-    parser_insert_col.add_argument("-n", "--column", required=True, help="Column position (1-indexed or name) for insertion.")
-    parser_insert_col.add_argument("-v", "--value", required=True, help="Value to populate the new column.")
-    parser_insert_col.add_argument("--new-header", default="new_column", help="Header name for the new column (default: 'new_column').")
+    # COL_INSERT
+    parser_col_insert = subparsers.add_parser("insert_col", help="Insert a new column. Required: --column and -v/--value.")
+    parser_col_insert.add_argument("-n", "--column", required=True, help="Column position (1-indexed or name) for insertion.")
+    parser_col_insert.add_argument("-v", "--value", required=True, help="Value to populate the new column.")
+    parser_col_insert.add_argument("--new-header", default="new_column", help="Header name for the new column (default: 'new_column').")
     
-    # DROP_COL
-    parser_drop_col = subparsers.add_parser("drop_col", help="Drop columns. Required: --column.")
-    parser_drop_col.add_argument("-n", "--column", required=True, help="Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns.")
+    # COL_DROP
+    parser_col_drop = subparsers.add_parser("drop_col", help="Drop columns. Required: --column.")
+    parser_col_drop.add_argument("-n", "--column", required=True, help="Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns.")
     
     # GREP
     parser_grep = subparsers.add_parser("grep", help="Filter rows. Required: --column and one of -p/--pattern, --starts-with, --ends-with, or --word-file.")
@@ -268,10 +259,10 @@ def _setup_arg_parser():
     parser_cleanup_values.add_argument("-n", "--column", required=True, help="Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column.")
     
     # PREFIX ADD
-    parser_add_prefix = subparsers.add_parser("add_prefix", help="Add a prefix to column values. Required: --column and -v/--string.")
-    parser_add_prefix.add_argument("-n", "--column", required=True, help="Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column.")
-    parser_add_prefix.add_argument("-v", "--string", required=True, help="The prefix string to add. Supports escape sequences.")
-    parser_add_prefix.add_argument("-d", "--delimiter", default="", help="Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences.")
+    parser_prefix_add = subparsers.add_parser("add_prefix", help="Add a prefix to column values. Required: --column and -v/--string.")
+    parser_prefix_add.add_argument("-n", "--column", required=True, help="Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column.")
+    parser_prefix_add.add_argument("-v", "--string", required=True, help="The prefix string to add. Supports escape sequences.")
+    parser_prefix_add.add_argument("-d", "--delimiter", default="", help="Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences.")
     
     # VALUE COUNTS
     parser_value_counts = subparsers.add_parser("count_values", help="Count top occurring values. Required: --column.")
@@ -286,15 +277,15 @@ def _setup_arg_parser():
     parser_strip.add_argument("--in-place", action="store_true", help="Modify the column in place instead of creating a new column.")
     
     # NUMERIC MAP
-    parser_onehot_encode = subparsers.add_parser("onehot_encode", help="Map unique string values to numbers. Required: --column.")
-    parser_onehot_encode.add_argument("-n", "--column", required=True, help="Column (1-indexed or name) whose unique values are to be mapped to numbers.")
-    parser_onehot_encode.add_argument("--new-header", help="Header for the new numeric mapping column (default: 'onehot_encode_of_ORIGINAL_COLUMN_NAME').")
+    parser_numeric_map = subparsers.add_parser("map_numeric", help="Map unique string values to numbers. Required: --column.")
+    parser_numeric_map.add_argument("-n", "--column", required=True, help="Column (1-indexed or name) whose unique values are to be mapped to numbers.")
+    parser_numeric_map.add_argument("--new-header", help="Header for the new numeric mapping column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME').")
     
     # REGEX CAPTURE
-    parser_capture_regex = subparsers.add_parser("capture_regex", help="Capture substrings using a regex capturing group. Required: --column and -p/--pattern.")
-    parser_capture_regex.add_argument("-n", "--column", required=True, help="Column on which to apply the regex (1-indexed or name).")
-    parser_capture_regex.add_argument("-p", "--pattern", required=True, help="Regex pattern with at least one capturing group (e.g., '_(S[0-9]+)\\.' ).")
-    parser_capture_regex.add_argument("--new-header", default="_captured", help="Suffix or new header for the captured column (default: '_captured').")
+    parser_regex_capture = subparsers.add_parser("capture_regex", help="Capture substrings using a regex capturing group. Required: --column and -p/--pattern.")
+    parser_regex_capture.add_argument("-n", "--column", required=True, help="Column on which to apply the regex (1-indexed or name).")
+    parser_regex_capture.add_argument("-p", "--pattern", required=True, help="Regex pattern with at least one capturing group (e.g., '_(S[0-9]+)\\.' ).")
+    parser_regex_capture.add_argument("--new-header", default="_captured", help="Suffix or new header for the captured column (default: '_captured').")
     
     # VIEW
     parser_view = subparsers.add_parser("view", help="Display the data in a formatted table.")
@@ -319,17 +310,17 @@ def _setup_arg_parser():
     parser_cut.add_argument("--list", action="store_true",
                         help="Interpret the pattern as a comma-separated list of column names for selection in the given order.")
     
-    # VIEW_HEADER
-    parser_view_header = subparsers.add_parser("view_header", help="Display header names and positions.")
+    # VIEWHEADER
+    parser_viewheader = subparsers.add_parser("viewheader", help="Display header names and positions.")
     
-    # INSERT_ROW
-    parser_insert_row = subparsers.add_parser("insert_row", help="Insert a new row at a specified 1-indexed position. Use -i 0 to insert at the header.")
-    parser_insert_row.add_argument("-i", "--row-idx", type=int, default=0, help="Row position for insertion (1-indexed, 0 for header insertion).")
-    parser_insert_row.add_argument("-v", "--values", help="Comma-separated list of values for the new row. Supports escape sequences.")
+    # ROW_INSERT
+    parser_row_insert = subparsers.add_parser("insert_row", help="Insert a new row at a specified 1-indexed position. Use -i 0 to insert at the header.")
+    parser_row_insert.add_argument("-i", "--row-idx", type=int, default=0, help="Row position for insertion (1-indexed, 0 for header insertion).")
+    parser_row_insert.add_argument("-v", "--values", help="Comma-separated list of values for the new row. Supports escape sequences.")
     
-    # DROP_ROW
-    parser_drop_row = subparsers.add_parser("drop_row", help="Delete row(s) at a specified 1-indexed position. Use -i 0 to drop the header row.")
-    parser_drop_row.add_argument("-i", "--row-idx", type=int, required=True, help="Row position to drop (1-indexed, 0 drops the header).")
+    # ROW_DROP
+    parser_row_drop = subparsers.add_parser("drop_row", help="Delete row(s) at a specified 1-indexed position. Use -i 0 to drop the header row.")
+    parser_row_drop.add_argument("-i", "--row-idx", type=int, required=True, help="Row position to drop (1-indexed, 0 drops the header).")
     
     # ggplot subcommand using Plotnine
     parser_ggplot = subparsers.add_parser("ggplot", help="Generate a ggplot using Plotnine and save to a PDF file.")
@@ -375,37 +366,13 @@ def _setup_arg_parser():
     parser_unmelt.add_argument("--columns", required=True, help="Column name that contains variable names (to become new columns).")
     parser_unmelt.add_argument("--value", required=True, help="Column name that contains the values.")
     
-
-    parser_concat = subparsers.add_parser(
-        "concat",
-        help="Vertically concatenate multiple files (header printed once)."
-    )
-    parser_concat.add_argument(
-        "files", nargs="+",
-        help="Input table files to concatenate (must share same columns)."
-    )
-    parser_concat.add_argument(
-        "--noheader", action="store_true",
-        help="Treat inputs as having no header; concatenate all rows."
-    )
-    
-    parser_merge = subparsers.add_parser(
-        "merge",
-        help="Horizontally merge multiple files on a key column."
-    )
-    parser_merge.add_argument(
-        "-k", "--key", required=True,
-        help="Key column name or 1-indexed position to join on."
-    )
-    parser_merge.add_argument(
-        "--how", default="outer",
-        choices=["inner", "left", "right", "outer"],
-        help="Merge strategy (default: outer)."
-    )
-    parser_merge.add_argument(
-        "files", nargs="+",
-        help="Input table files to merge (must share the key)."
-    )
+    # NEW: ADD_METADATA
+    parser_add_metadata = subparsers.add_parser("add_metadata", help="Merge a metadata file into the main table based on key columns.")
+    parser_add_metadata.add_argument("--meta", required=True, help="Path to the metadata file (CSV).")
+    parser_add_metadata.add_argument("--key_column_in_input", required=True, help="Key column (name or 1-indexed) in the input file to join on.")
+    parser_add_metadata.add_argument("--key_column_in_meta", required=True, help="Key column (name or 1-indexed) in the metadata file to join on.")
+    parser_add_metadata.add_argument("--meta_sep", default=None,
+    help="Field separator for the metadata file. If not provided, the global --sep is used.")
 
     return parser
 
@@ -414,6 +381,8 @@ def _setup_arg_parser():
 # --------------------------
 ##===~
 def _handle_aggr(df, args, input_sep, is_header_present, row_idx_col_name):
+    import sys
+    import pandas as pd
     from scipy.stats import entropy as calculate_entropy
 
     if getattr(args, "melted", False):
@@ -514,7 +483,7 @@ def _handle_aggr(df, args, input_sep, is_header_present, row_idx_col_name):
             summary_df.rename(columns=rename_dict, inplace=True)
             return summary_df
 
-        elif agg_func in ["value_counts", "entropy"]:
+        elif agg_func in ["count_values", "entropy"]:
             summary_rows = []
             grouped = df.groupby(group_cols)
             for grp_keys, grp_df in grouped:
@@ -556,6 +525,135 @@ def _handle_aggr(df, args, input_sep, is_header_present, row_idx_col_name):
 
 ##===~
 
+def _handle_summarize_obsolete(df, args, input_sep, is_header_present, row_idx_col_name):
+    # (Obsolete summarization function — not modified here)
+    import sys
+    import pandas as pd
+    from scipy.stats import entropy as calculate_entropy
+    if getattr(args, "melted", False):
+        required_cols = {"variable", "value"}
+        if not required_cols.issubset(set(df.columns)):
+            sys.stderr.write("Error: When using --melted, input must have 'variable' and 'value' columns.\n")
+            sys.exit(1)
+        group_cols = []
+        if getattr(args, "group", None):
+            group_cols = [col.strip() for col in args.group.split(",") if col.strip()]
+        if "variable" not in group_cols:
+            group_cols.append("variable")
+        agg_func = args.agg.lower()
+        summary_rows = []
+        grouped = df.groupby(group_cols)
+        for grp_keys, grp_df in grouped:
+            if not isinstance(grp_keys, tuple):
+                grp_keys = (grp_keys,)
+            group_dict = dict(zip(group_cols, grp_keys))
+            series = grp_df["value"]
+            if agg_func in ["sum", "mean"]:
+                try:
+                    series_numeric = pd.to_numeric(series, errors="raise")
+                except Exception as e:
+                    sys.stderr.write(f"Error: Cannot convert 'value' column to numeric for aggregation: {e}\n")
+                    sys.exit(1)
+                result = series_numeric.sum() if agg_func == "sum" else series_numeric.mean()
+                group_dict.update({f"{agg_func}_value": result})
+                summary_rows.append(group_dict)
+            elif agg_func == "count_values":
+                normalize = getattr(args, "normalize", False)
+                vc = series.value_counts(normalize=normalize).reset_index()
+                if normalize:
+                    vc.columns = ["value", "normalized"]
+                    vc["raw_count"] = series.value_counts(normalize=False).reindex(vc["value"]).values
+                else:
+                    vc.columns = ["value", "count"]
+                for _, row in vc.iterrows():
+                    out = group_dict.copy()
+                    out["aggregated_column"] = "value"
+                    out["value"] = row["value"]
+                    if normalize:
+                        out.update({"raw_count": row["raw_count"], "normalized": row["normalized"]})
+                    else:
+                        out["count"] = row["count"]
+                    summary_rows.append(out)
+            elif agg_func == "entropy":
+                counts = series.value_counts()
+                ent = calculate_entropy(counts)
+                group_dict.update({"entropy": ent})
+                summary_rows.append(group_dict)
+            else:
+                sys.stderr.write(f"Error: Unsupported aggregation function '{agg_func}' for melted data.\n")
+                sys.exit(1)
+        summary_df = pd.DataFrame(summary_rows)
+        return summary_df
+    else:
+        if not getattr(args, "group", None):
+            sys.stderr.write("Error: In wide format, you must supply --group to specify grouping variable(s).\n")
+            sys.exit(1)
+        if not getattr(args, "cols", None):
+            sys.stderr.write("Error: In wide format, you must supply --cols with the comma-separated list of columns to aggregate (or '*' for all non-group columns).\n")
+            sys.exit(1)
+        group_cols = [col.strip() for col in args.group.split(",") if col.strip()]
+        if args.cols.strip() == "*" or args.cols.strip() == "all":
+            agg_cols = [col for col in df.columns if col not in group_cols]
+        else:
+            agg_cols = [col.strip() for col in args.cols.split(",") if col.strip()]
+        agg_func = args.agg.lower()
+        if agg_func in ["sum", "mean"]:
+            valid_agg_cols = []
+            for col in agg_cols:
+                series_numeric = pd.to_numeric(df[col], errors="coerce")
+                if series_numeric.notna().sum() > 0:
+                    valid_agg_cols.append(col)
+                else:
+                    if getattr(args, "verbose", False):
+                        sys.stderr.write(f"Warning: Skipping non-numeric column '{col}' for aggregator '{agg_func}'.\n")
+            if not valid_agg_cols:
+                sys.stderr.write("Error: No numeric columns found for aggregation.\n")
+                sys.exit(1)
+            for col in valid_agg_cols:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            grouped = df.groupby(group_cols)
+            summary_df = grouped[valid_agg_cols].agg(agg_func).reset_index()
+            rename_dict = {col: f"{agg_func}_{col}" for col in valid_agg_cols}
+            summary_df.rename(columns=rename_dict, inplace=True)
+            return summary_df
+        elif agg_func in ["count_values", "entropy"]:
+            summary_rows = []
+            grouped = df.groupby(group_cols)
+            for grp_keys, grp_df in grouped:
+                if not isinstance(grp_keys, tuple):
+                    grp_keys = (grp_keys,)
+                group_dict = dict(zip(group_cols, grp_keys))
+                for col in agg_cols:
+                    series = grp_df[col]
+                    if agg_func == "count_values":
+                        normalize = getattr(args, "normalize", False)
+                        vc = series.value_counts(normalize=normalize).reset_index()
+                        if normalize:
+                            vc.columns = ["value", "normalized"]
+                            vc["raw_count"] = series.value_counts(normalize=False).reindex(vc["value"]).values
+                        else:
+                            vc.columns = ["value", "count"]
+                        for _, row in vc.iterrows():
+                            out = group_dict.copy()
+                            out["aggregated_column"] = col
+                            out["value"] = row["value"]
+                            if normalize:
+                                out.update({"raw_count": row["raw_count"], "normalized": row["normalized"]})
+                            else:
+                                out["count"] = row["count"]
+                            summary_rows.append(out)
+                    elif agg_func == "entropy":
+                        counts = series.value_counts()
+                        ent = calculate_entropy(counts)
+                        out = group_dict.copy()
+                        out["aggregated_column"] = col
+                        out["entropy"] = ent
+                        summary_rows.append(out)
+            summary_df = pd.DataFrame(summary_rows)
+            return summary_df
+        else:
+            sys.stderr.write(f"Error: Unsupported aggregation function '{agg_func}'.\n")
+            sys.exit(1)
 
 ##==
 
@@ -857,7 +955,7 @@ def _handle_add_prefix(df, args, input_sep, is_header_present, row_idx_col_name)
         df.iloc[:, i] = df.iloc[:, i].astype(str).apply(lambda x: f"{prefix}{delim}{x}")
     return df
 
-def _handle_value_counts(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
+def _handle_count_values(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
     counter = Counter() if state is None else state
     indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
     if not indices:
@@ -891,12 +989,12 @@ def _handle_strip(df, args, input_sep, is_header_present, row_idx_col_name):
         _print_verbose(args, f"Inserted stripped column '{new_header}' after '{original}'.")
     return df
 
-def _handle_onehot_encode(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
+def _handle_map_numeric(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
     mapping, next_id = ({} , 1) if state is None else state
     col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     original = df.columns[col]
     _print_verbose(args, f"Mapping unique values in '{original}' to numeric identifiers.")
-    new_header = args.new_header if args.new_header else f"onehot_encode_of_{original}"
+    new_header = args.new_header if args.new_header else f"numeric_map_of_{original}"
     if is_header_present:
         new_header = get_unique_header(new_header, df)
     def mapper(x):
@@ -926,6 +1024,50 @@ def _handle_capture_regex(df, args, input_sep, is_header_present, row_idx_col_na
         raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
     df.insert(len(df.columns), new_header, captured.reset_index(drop=True))
     return df
+def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
+    import sys
+    import pandas as pd
+    from pandas.api.types import is_numeric_dtype
+
+    _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
+    pd.set_option('display.max_rows', args.max_rows)
+    pd.set_option('display.max_columns', args.max_cols)
+    pd.set_option('display.width', None)
+    pd.set_option('display.colheader_justify', 'left')
+    
+    # Work on a copy of the DataFrame for display formatting.
+    disp = df.copy()
+    # Apply numeric cleanup only if --cleanup-numbers was supplied.
+    if getattr(args, "cleanup_numbers", False):
+         disp = _format_numeric_columns(disp)
+    
+    if row_idx_col_name and row_idx_col_name in disp.columns:
+        cols = [row_idx_col_name] + [col for col in disp.columns if col != row_idx_col_name]
+        disp = disp[cols]
+        _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
+    
+    # Depending on the pretty_print flag, output the DataFrame accordingly.
+    if getattr(args, "pretty_print", True):
+         # Pretty print: use to_string for nicely aligned output.
+         sys.stdout.write(disp.to_string(index=True, header=is_header_present) + '\n')
+    else:
+         # Plain TSV output: use to_csv to preserve TSV formatting.
+         disp.to_csv(
+             sys.stdout,
+             sep=input_sep,
+             index=False,
+             header=is_header_present,
+             encoding='utf-8',
+             quoting=csv.QUOTE_NONE,
+             escapechar='\\'
+         )
+    
+    pd.reset_option('display.max_rows')
+    pd.reset_option('display.max_columns')
+    pd.reset_option('display.width')
+    pd.reset_option('display.colheader_justify')
+    
+    sys.exit(0)
 
 
 def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
@@ -973,8 +1115,8 @@ def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
         return df
 
 ####===
-def _handle_view_header(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line):
-
+def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line):
+    import sys
 
     _print_verbose(args, "Displaying header names with first data row.")
 
@@ -1215,6 +1357,13 @@ def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name)
         fig_dims = (8, 6)
     sys.stderr.write(f"DEBUG: Using figure size: {fig_dims[0]} x {fig_dims[1]} inches\n")
     
+    import matplotlib.pyplot as plt
+    try:
+        import scienceplots
+        plt.style.use(['science'])
+    except ImportError:
+        pass
+    
     mode = args.mode.lower()
     if not args.colnames:
         sys.stderr.write("Error: For matplotlib plotting, --colnames is required.\n")
@@ -1250,95 +1399,72 @@ def _handle_melt(df, args, input_sep, is_header_present, row_idx_col_name):
                    var_name=args.var_name, value_name=args.value_name)
 
 def _handle_unmelt(df, args, input_sep, is_header_present, row_idx_col_name):
-    """
-    Pivot a melted DataFrame back to wide format, preserving:
-      - the order of 'variable' columns as they first appeared in the long data
-      - the order of index values (args.index) as they first appeared.
-    """
-    idx_col = args.index
-    var_col = args.columns
-    val_col = args.value
-
-    # Capture the order in which each variable and each index first appear
-    var_order = df[var_col].drop_duplicates().tolist()
-    id_order = df[idx_col].drop_duplicates().tolist()
-
     try:
-        # Pivot: index → idx_col, columns → var_col, values → val_col
-        pivoted = df.pivot(index=idx_col, columns=var_col, values=val_col).reset_index()
-
-        # Flatten MultiIndex column names (if any)
-        pivoted.columns = [
-            col if not isinstance(col, tuple) else '_'.join(map(str, col)).strip('_')
-            for col in pivoted.columns.values
-        ]
-
-        # Re-index rows to original id order
-        pivoted = pivoted.set_index(idx_col).reindex(id_order).reset_index()
-
-        # Re-order columns: first idx_col, then variables in the order they appeared
-        keep = [idx_col] + [v for v in var_order if v in pivoted.columns]
-        pivoted = pivoted[keep]
-
+        unmelted_df = df.pivot(index=args.index, columns=args.columns, values=args.value)
+        unmelted_df = unmelted_df.reset_index()
+        unmelted_df.columns = [col if not isinstance(col, tuple) else '_'.join(map(str, col)).strip('_')
+                                for col in unmelted_df.columns.values]
     except Exception as e:
         sys.stderr.write(f"Error in unmelt operation: {e}\n")
         sys.exit(1)
+    return unmelted_df
 
-    return pivoted
+# --------------------------
+# ADD_METADATA Handler
+# --------------------------
+def _handle_add_metadata(df, args, input_sep, is_header_present, row_idx_col_name):
+    import sys
+    import pandas as pd
+    import csv
+    import codecs
 
-def _handle_concat(args, input_sep, *_):
-    dfs = []
-    header = None
-    # respect global --ignore-lines
-    comment_char = None
-    if getattr(args, "ignore_lines", ""):
-        if args.ignore_lines.startswith("^"):
-            comment_char = args.ignore_lines[1:]
-        else:
-            comment_char = args.ignore_lines
+    if args.lowmem:
+        sys.stderr.write("Error: 'add_metadata' operation does not support low-memory mode (--lowmem).\n")
+        sys.exit(1)
 
-    for fn in args.files:
-        df = pd.read_csv(
-            fn,
-            sep=input_sep,
-            header=0 if not args.noheader else None,
-            dtype=str,
-            comment=comment_char
-        )
-        if header is None and not args.noheader:
-            header = df.columns
-        if header is not None and not args.noheader:
-            df.columns = header
-        dfs.append(df)
-    return pd.concat(dfs, ignore_index=True)
+    meta_sep_raw = getattr(args, "meta_sep", None) or input_sep
+    meta_sep = codecs.decode(meta_sep_raw, 'unicode_escape')
 
-def _handle_merge(args, input_sep, *_):
-    hdr = 0 if not args.noheader else None
-    # read the first file
-    base = pd.read_csv(args.files[0], sep=input_sep, header=hdr, dtype=str)
-    is_header_present = hdr is not None
+    try:
+        meta_df = pd.read_csv(args.meta, sep=meta_sep, dtype=str, quoting=csv.QUOTE_NONE, escapechar='\\')
+    except Exception as e:
+        sys.stderr.write(f"Error reading metadata file '{args.meta}': {e}\n")
+        sys.exit(1)
 
-    # parse the user’s key (1-indexed or name) into the actual column label
-    key_idx = _parse_column_arg(args.key, base.columns, is_header_present, "key")
-    key_col = base.columns[key_idx]
+    _print_verbose(args, f"Metadata file head:\n{meta_df.head().to_string()}")
 
-    # merge each subsequent file on the same parsed key
-    for fn in args.files[1:]:
-        other = pd.read_csv(fn, sep=input_sep, header=hdr, dtype=str)
-        key_idx_other = _parse_column_arg(args.key, other.columns, is_header_present, "key")
-        key_col_other = other.columns[key_idx_other]
+    df.columns = df.columns.astype(str).str.strip()
+    meta_df.columns = meta_df.columns.astype(str).str.strip()
 
-        base = base.merge(
-            other,
-            how=args.how,
-            left_on=key_col,
-            right_on=key_col_other,
-            suffixes=(
-                "",
-                "_" + os.path.splitext(os.path.basename(fn))[0]
-            )
-        )
-    return base
+    key_input_idx = _parse_column_arg(args.key_column_in_input, df.columns, is_header_present, "key_column_in_input")
+    key_input = df.columns[key_input_idx]
+    key_meta_idx = _parse_column_arg(args.key_column_in_meta, meta_df.columns, True, "key_column_in_meta")
+    key_meta = meta_df.columns[key_meta_idx]
+
+    df[key_input] = df[key_input].astype(str).str.strip().str.upper()
+    meta_df[key_meta] = meta_df[key_meta].astype(str).apply(remove_ansi).str.strip().str.upper()
+
+    _print_verbose(args, f"Merging metadata: joining input column '{key_input}' with metadata column '{key_meta}'.")
+
+    merged_df = df.merge(meta_df, how='left',
+                         left_on=key_input,
+                         right_on=key_meta,
+                         suffixes=("", "_meta"))
+
+    to_drop = []
+    for col in merged_df.columns:
+        if col.endswith("_meta"):
+            base = col[:-5]
+            if base in merged_df.columns:
+                merged_df[base] = merged_df[col].combine_first(merged_df[base])
+                to_drop.append(col)
+            else:
+                merged_df.rename(columns={col: base}, inplace=True)
+    if to_drop:
+        merged_df.drop(columns=to_drop, inplace=True)
+
+    return merged_df
+
 # --------------------------
 # Custom Functions for Plotting
 # --------------------------
@@ -1442,15 +1568,102 @@ def venn_diagram(df, colnames):
     return fig, segment_table
 
 # --------------------------
+# Dispatch Table
+# --------------------------
+OPERATION_HANDLERS = {
+    "move": _handle_move,
+    "insert_col": _handle_insert_col,
+    "drop_col": _handle_drop_col,
+    "grep": _handle_grep,
+    "split": _handle_split,
+    "join": _handle_join,
+    "tr": _handle_tr,
+    "sort": _handle_sort,
+    "cleanup_header": _handle_cleanup_header,
+    "cleanup_values": _handle_cleanup_values,
+    "add_prefix": _handle_add_prefix,
+    "count_values": _handle_count_values,
+    "strip": _handle_strip,
+    "map_numeric": _handle_map_numeric,
+    "capture_regex": _handle_capture_regex,
+    "view": _handle_view,
+    "cut": _handle_cut,
+    "viewheader": _handle_viewheader,
+    "insert_row": _handle_insert_row,
+    "drop_row": _handle_drop_row,
+    "transpose": _handle_transpose,
+    "ggplot": _handle_ggplot,
+    "matplotlib": _handle_matplotlib,
+    "melt": _handle_melt,
+    "unmelt": _handle_unmelt,
+    "aggr": _handle_aggr,
+    "add_metadata": _handle_add_metadata
+}
+
+# --------------------------
 # Input/Output Functions
 # --------------------------
+def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
+    raw_first_line = []
+    input_stream = args.file
+    comment_char = None
+    if args.ignore_lines:
+        if args.ignore_lines.startswith('^'):
+            comment_char = args.ignore_lines[1:]
+        else:
+            comment_char = args.ignore_lines
+    if use_chunked:
+        try:
+            reader = pd.read_csv(input_stream, sep=input_sep, header=header_param, dtype=str,
+                                 comment=comment_char,
+                                 chunksize=CHUNK_SIZE, iterator=True)
+            first_chunk = next(reader)
+            if first_chunk.empty and args.operation not in ["viewheader", "view", "count_values", "capture_regex"]:
+                sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires non-empty data.\n")
+                sys.exit(1)
+            if not is_header_present:
+                first_chunk.columns = pd.Index(range(first_chunk.shape[1]))
+            def generator():
+                yield first_chunk
+                for chunk in reader:
+                    yield chunk
+            return generator(), raw_first_line
+        except (StopIteration, pd.errors.EmptyDataError):
+            sys.stderr.write(f"Warning: Input is empty. Cannot perform '{args.operation}'.\n")
+            sys.exit(0)
+        except Exception as e:
+            sys.stderr.write(f"Error reading input in low-memory mode: {e}\n")
+            sys.exit(1)
+    else:
+        try:
+            content = input_stream.read()
+            if not content.strip() and args.operation not in ["viewheader", "view", "count_values"]:
+                sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires data.\n")
+                sys.exit(1)
+            if not content.strip():
+                return pd.DataFrame(columns=[]), raw_first_line
+            csv_io = StringIO(content)
+            if not is_header_present:
+                pos = csv_io.tell()
+                first_line = csv_io.readline().strip()
+                raw_first_line = first_line.split(input_sep) if first_line else []
+                csv_io.seek(pos)
+            df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str, comment=comment_char)
+            return df, raw_first_line
+        except pd.errors.EmptyDataError:
+            df = pd.DataFrame(columns=[])
+            _print_verbose(args, "Empty input; proceeding with an empty DataFrame.")
+            return df, raw_first_line
+        except Exception as e:
+            sys.stderr.write(f"Error reading input data: {e}\n")
+            sys.exit(1)
 
 def _write_output_data(data, args, input_sep, is_header_present, header_printed):
     try:
         # Before outputting, if data is a DataFrame, apply uniform numeric formatting.
         if isinstance(data, pd.DataFrame):
             data = _format_numeric_columns(data)
-        if args.operation in ["view", "view_header", "value_counts"]:
+        if args.operation in ["view", "viewheader", "count_values"]:
             return header_printed
         if isinstance(data, pd.DataFrame):
             data.to_csv(
@@ -1492,6 +1705,37 @@ def _write_output_data(data, args, input_sep, is_header_present, header_printed)
         sys.exit(1)
     return header_printed
 
+def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
+    import sys
+    import pandas as pd
+    from pandas.api.types import is_numeric_dtype
+
+    _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
+    pd.set_option('display.max_rows', args.max_rows)
+    pd.set_option('display.max_columns', args.max_cols)
+    pd.set_option('display.width', None)
+    pd.set_option('display.colheader_justify', 'left')
+    
+    # Work on a copy of the DataFrame for display formatting.
+    disp = df.copy()
+    if not getattr(args, "precision_long", False):
+        # Apply uniform numeric formatting:
+        disp = _format_numeric_columns(disp)
+    
+    if row_idx_col_name and row_idx_col_name in disp.columns:
+        cols = [row_idx_col_name] + [col for col in disp.columns if col != row_idx_col_name]
+        disp = disp[cols]
+        _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
+    
+    # Output using to_string (no float_format needed because numbers are already formatted)
+    sys.stdout.write(disp.to_string(index=True, header=is_header_present) + '\n')
+    
+    pd.reset_option('display.max_rows')
+    pd.reset_option('display.max_columns')
+    pd.reset_option('display.width')
+    pd.reset_option('display.colheader_justify')
+    
+    sys.exit(0)
 
 def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
     raw_first_line = []
@@ -1508,7 +1752,7 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
                                  comment=comment_char,
                                  chunksize=CHUNK_SIZE, iterator=True)
             first_chunk = next(reader)
-            if first_chunk.empty and args.operation not in ["view_header", "view", "value_counts", "capture_regex"]:
+            if first_chunk.empty and args.operation not in ["viewheader", "view", "count_values", "capture_regex"]:
                 sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires non-empty data.\n")
                 sys.exit(1)
             if not is_header_present:
@@ -1527,7 +1771,7 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
     else:
         try:
             content = input_stream.read()
-            if not content.strip() and args.operation not in ["view_header", "view", "value_counts"]:
+            if not content.strip() and args.operation not in ["viewheader", "view", "count_values"]:
                 sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires data.\n")
                 sys.exit(1)
             if not content.strip():
@@ -1548,104 +1792,16 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
             sys.stderr.write(f"Error reading input data: {e}\n")
             sys.exit(1)
 
-def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
-    import sys
-    import pandas as pd
-    from pandas.api.types import is_numeric_dtype
-
-    _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
-    pd.set_option('display.max_rows', args.max_rows)
-    pd.set_option('display.max_columns', args.max_cols)
-    pd.set_option('display.width', None)
-    pd.set_option('display.colheader_justify', 'left')
-
-    # Copy for formatting
-    disp = df.copy()
-
-    if args.precision_long:
-        # full precision; do nothing
-        pass
-    elif getattr(args, "cleanup_numbers", False):
-        disp = _format_numeric_columns(disp)
-
-    if row_idx_col_name and row_idx_col_name in disp.columns:
-        disp = disp[[row_idx_col_name] + [c for c in disp.columns if c != row_idx_col_name]]
-        _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
-
-    if getattr(args, "pretty_print", True):
-        sys.stdout.write(disp.to_string(index=is_header_present, header=is_header_present) + '\n')
-    else:
-        disp.to_csv(
-            sys.stdout,
-            sep=input_sep,
-            index=False,
-            header=is_header_present,
-            encoding='utf-8',
-            quoting=csv.QUOTE_NONE,
-            escapechar='\\'
-        )
-
-    pd.reset_option('display.max_rows')
-    pd.reset_option('display.max_columns')
-    pd.reset_option('display.width')
-    pd.reset_option('display.colheader_justify')
-    sys.exit(0)
-
-# --------------------------
-# Dispatch Table
-# --------------------------
-OPERATION_HANDLERS = {
-    "move": _handle_move,
-    "insert_col": _handle_insert_col,
-    "drop_col": _handle_drop_col,
-    "grep": _handle_grep,
-    "split": _handle_split,
-    "join": _handle_join,
-    "tr": _handle_tr,
-    "sort": _handle_sort,
-    "cleanup_header": _handle_cleanup_header,
-    "cleanup_values": _handle_cleanup_values,
-    "add_prefix": _handle_add_prefix,
-    "count_values": _handle_value_counts,
-    "strip": _handle_strip,
-    "onehot_encode": _handle_onehot_encode,
-    "capture_regex": _handle_capture_regex,
-    "view": _handle_view,
-    "cut": _handle_cut,
-    "view_header": _handle_view_header,
-    "insert_row": _handle_insert_row,
-    "drop_row": _handle_drop_row,
-    "transpose": _handle_transpose,
-    "ggplot": _handle_ggplot,
-    "matplotlib": _handle_matplotlib,
-    "melt": _handle_melt,
-    "unmelt": _handle_unmelt,
-    "aggr": _handle_aggr,
-    "concat": _handle_concat,
-    "merge":  _handle_merge,
-}
-
-
 def main():
     parser = _setup_arg_parser()
     args = parser.parse_args()
     if not args.operation:
         parser.print_help()
         sys.exit(0)
-
-    if args.operation in ("concat", "merge"):
-        out = OPERATION_HANDLERS[args.operation](
-            args,
-            codecs.decode(args.sep, 'unicode_escape')
-        )
-        out.to_csv(
-            sys.stdout,
-            sep=codecs.decode(args.sep, 'unicode_escape'),
-            index=False,
-            header=(not getattr(args, "noheader", False))
-        )
-        sys.exit(0)
     
+    if args.operation == "add_metadata" and args.lowmem:
+        sys.stderr.write("Error: 'add_metadata' operation does not support low-memory mode (--lowmem).\n")
+        sys.exit(1)
     
     if args.noheader:
         header_param = None
@@ -1660,7 +1816,7 @@ def main():
         sys.stderr.write("Error: 'sort' operation cannot be performed in low-memory mode (--lowmem).\n")
         sys.exit(1)
     
-    lowmem_ops = ["value_counts", "onehot_encode", "grep", "tr", "strip", "add_prefix", "cleanup_values", "capture_regex"]
+    lowmem_ops = ["count_values", "map_numeric", "grep", "tr", "strip", "add_prefix", "cleanup_values", "capture_regex"]
     use_chunked = args.lowmem and args.operation in lowmem_ops
 
     lowmem_row = False
@@ -1674,7 +1830,7 @@ def main():
     if lowmem_row:
         sys.stderr.write("# Processing: " + " ".join(sys.argv) + "\n")
         if args.operation == "insert_row":
-            _print_verbose(args, "Low-memory insert_row (header insertion).")
+            _print_verbose(args, "Low-memory row_insert (header insertion).")
             first_line = args.file.readline().strip()
             count = len(first_line.split(input_sep)) if first_line else (len(args.values.split(',')) if args.values else 1)
             values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')] if args.values else [f"col{i+1}" for i in range(count)]
@@ -1687,7 +1843,7 @@ def main():
                 sys.stdout.write(line)
             sys.exit(0)
         elif args.operation == "drop_row":
-            _print_verbose(args, "Low-memory drop_row (dropping first row).")
+            _print_verbose(args, "Low-memory row_drop (dropping first row).")
             try:
                 first_line = args.file.readline()
                 if not first_line.strip():
@@ -1732,12 +1888,12 @@ def main():
         for chunk in df_or_chunks:
             if not is_header_present:
                 chunk.columns = pd.Index(range(chunk.shape[1]))
-            if args.operation in ["grep", "onehot_encode"]:
+            if args.operation in ["grep", "map_numeric"]:
                 processed, op_state[args.operation] = handler(
                     chunk, args, input_sep, is_header_present, row_idx_col,
                     state=op_state.get(args.operation, {})
                 )
-            elif args.operation in ["view", "capture_regex", "view_header"]:
+            elif args.operation in ["view", "capture_regex", "viewheader"]:
                 processed = handler(
                     chunk, args, input_sep, is_header_present, row_idx_col, raw_first_line
                 )
@@ -1756,9 +1912,9 @@ def main():
             missing = set(word_list) - matched
             sys.stderr.write("Words not seen in input: (n=" + str(len(missing)) + ") " + ", ".join(sorted(missing)) + "\n")
     else:
-        if args.operation in ["grep", "onehot_encode"]:
+        if args.operation in ["grep", "map_numeric"]:
             processed_df, state = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
-        elif args.operation in ["view", "capture_regex", "view_header"]:
+        elif args.operation in ["view", "capture_regex", "viewheader"]:
             processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col, raw_first_line)
         else:
             processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
