@@ -1,388 +1,429 @@
 #!/usr/bin/env python3
-import sys
+# VERSION=3
+VERSION=4
+import json
 import argparse
 import ast
-import inspect
-import difflib
 import os
 import re
+import subprocess
+import difflib
 
-# ---------------------------
-# Existing helper functions
+# Helper functions for parsing and file operations
+def get_function_source(file_path, function_name):
+    """Finds and returns the source code of a function."""
+    with open(file_path, 'r') as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            source_lines = open(file_path).readlines()
+            start_line = node.lineno - 1
+            end_line = node.end_lineno
+            return ''.join(source_lines[start_line:end_line])
+    return None
 
-def get_functions_from_code(code):
-    tree = ast.parse(code)
-    functions = {}
+def find_function_node(file_path, function_name):
+    """Finds and returns the AST node of a function."""
+    with open(file_path, 'r') as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return node
+    return None
+
+def find_function_and_calls(file_path, function_name):
+    """Finds function definition and all its call sites."""
+    with open(file_path, 'r') as f:
+        source = f.read()
+    tree = ast.parse(source)
+    calls = []
+    function_def_node = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            function_def_node = node
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == function_name:
+                calls.append(node)
+    return function_def_node, calls, source
+
+# --- Commands ---
+
+def jup2py_command(args):
+    """Converts a Jupyter notebook to a Python script."""
+    notebook_path = args.file
+    hide_non_code = args.hide_non_code
+    
+    with open(notebook_path, 'r') as f:
+        notebook = json.load(f)
+    for cell in notebook['cells']:
+        if cell['cell_type'] == 'code':
+            if cell['source']:
+                print(''.join(cell['source']))
+        elif not hide_non_code:
+            if cell['source']:
+                print(''.join([f"#{line}" for line in cell['source']]))
+
+def py2jup_command(args):
+    """Converts a Python script to a Jupyter notebook."""
+    script_path = args.file
+    single_cell = args.single_cell
+    
+    with open(script_path, 'r') as f:
+        source = f.read()
+    
+    notebook = {
+        "cells": [],
+        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}},
+        "nbformat": 4,
+        "nbformat_minor": 5
+    }
+
+    if single_cell:
+        notebook["cells"].append({"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": source.splitlines(True)})
+    else:
+        tree = ast.parse(source)
+        lines = source.splitlines(True)
+        last_line_end = 0
+
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                if node.lineno > last_line_end:
+                    pre_function_code = ''.join(lines[last_line_end:node.lineno-1])
+                    if pre_function_code.strip():
+                         notebook["cells"].append({"cell_type": "code", "source": pre_function_code.splitlines(True)})
+                
+                notebook["cells"].append({"cell_type": "markdown", "source": [f"# {node.name}\n"]})
+                function_source = ''.join(lines[node.lineno-1:node.end_lineno])
+                notebook["cells"].append({"cell_type": "code", "source": function_source.splitlines(True)})
+                last_line_end = node.end_lineno
+        
+        if last_line_end < len(lines):
+            remaining_code = ''.join(lines[last_line_end:])
+            if remaining_code.strip():
+                notebook["cells"].append({"cell_type": "code", "source": remaining_code.splitlines(True)})
+
+    with open(args.output, 'w') as f:
+        json.dump(notebook, f, indent=4)
+
+def list_command(args):
+    """Lists functions in a Python script."""
+    with open(args.file, 'r') as f:
+        tree = ast.parse(f.read())
+    
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef):
-            functions[node.name] = ast.get_source_segment(code, node)
-    return functions
+            if not args.search or args.search in node.name:
+                print(f"- {node.name}")
 
-def remove_comments(source):
-    lines = source.splitlines()
-    cleaned_lines = []
-    in_multiline_comment = False
-    for line in lines:
-        stripped_line = line.strip()
-        if stripped_line.startswith('"""') or stripped_line.startswith("'''"):
-            if in_multiline_comment:
-                in_multiline_comment = False
-                continue
+def explain_command(args):
+    """Prints the source code of a function, including comments."""
+    source_code = get_function_source(args.file, args.function_name)
+    if source_code:
+        print(f"Explanation for function '{args.function_name}':\n")
+        print(source_code)
+    else:
+        print(f"Error: Function '{args.function_name}' not found.")
+
+def diff_command(args):
+    """Provides a friendly diff between a function in the script and a file."""
+    try:
+        source_code_old = get_function_source(args.file, args.function_name)
+        if not source_code_old:
+            raise ValueError(f"Function '{args.function_name}' not found in script.")
+        
+        with open(args.new_file, 'r') as f:
+            source_code_new = f.read()
+
+        diff = difflib.unified_diff(
+            source_code_old.splitlines(keepends=True),
+            source_code_new.splitlines(keepends=True),
+            fromfile=f'--- Existing function {args.function_name}',
+            tofile=f'+++ New function from {args.new_file}',
+            n=3
+        )
+        for line in diff:
+            if line.startswith('---') or line.startswith('+++'):
+                print(line, end='')
+            elif line.startswith('-'):
+                print(f"Removed: {line[1:]}", end='')
+            elif line.startswith('+'):
+                print(f"Added: {line[1:]}", end='')
             else:
-                if stripped_line.count('"""') % 2 != 0 or stripped_line.count("'''") % 2 != 0:
-                    in_multiline_comment = True
-                    continue
-        if in_multiline_comment:
-            continue
-        if '#' in line:
-            line = line.split('#', 1)[0]
-        if line.strip():
-            cleaned_lines.append(line)
-    return "\n".join(cleaned_lines)
+                print(f"Unchanged: {line[1:]}", end='')
 
-def _align_assignments(code_segment):
-    """
-    Aligns assignment operators (including compound assignments) for lines that are simple one-line assignments.
-    Lines that begin with 'def' or 'class' are ignored.
-    
-    The regex captures:
-      group(1): indentation
-      group(2): left-hand side (LHS)
-      group(3): assignment operator (compound operators like +=, -=, etc., or plain =)
-      group(4): right-hand side (RHS)
-      
-    Consecutive assignment lines are then aligned so that the operators line up vertically.
-    """
-    # Order matters: longer compound operators must come before shorter ones.
-    assignment_pattern = re.compile(
-        r'^(?!\s*(?:def|class)\b)(\s*)(.+?)\s*(\*\*=|//=|>>=|<<=|\+=|-=|\*=|/=|%=|&=|\|=|\^=|=)\s*(.+)$'
-    )
-    
-    lines = code_segment.splitlines()
-    aligned_output = []
-    group = []  # Will accumulate tuples: (indent, lhs, operator, rhs)
+    except Exception as e:
+        print(f"Error: {e}")
 
-    def process_group():
-        nonlocal group, aligned_output
-        if not group:
-            return
-        max_lhs = max(len(lhs) for indent, lhs, op, rhs in group)
-        for indent, lhs, op, rhs in group:
-            aligned_output.append(f"{indent}{lhs.ljust(max_lhs)} {op} {rhs}")
-        group.clear()
-
-    for line in lines:
-        match = assignment_pattern.match(line)
-        if match:
-            group.append(match.groups())
-        else:
-            process_group()
-            aligned_output.append(line)
-    process_group()
-    return "\n".join(aligned_output)
-
-def get_code_from_input(args):
-    if args.file:
-        with open(args.file, 'r') as f:
-            return f.read()
-    else:
-        return sys.stdin.read()
-
-# ---------------------------
-# New helper functions for header transformation
-
-def split_arguments(param_str):
-    """
-    Splits a function's parameter string into individual arguments,
-    taking care of nested delimiters and quoted strings.
-    """
-    args_list = []
-    current = ""
-    depth = 0
-    in_string = False
-    string_char = ""
-    escape = False
-    for ch in param_str:
-        if escape:
-            current += ch
-            escape = False
-            continue
-        if ch == "\\":
-            current += ch
-            escape = True
-            continue
-        if in_string:
-            current += ch
-            if ch == string_char:
-                in_string = False
-            continue
-        if ch in ('"', "'"):
-            in_string = True
-            string_char = ch
-            current += ch
-            continue
-        if ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-        if ch == "," and depth == 0:
-            args_list.append(current.strip())
-            current = ""
-        else:
-            current += ch
-    if current.strip():
-        args_list.append(current.strip())
-    return args_list
-
-def transform_func_header(header_str, unfold=True):
-    """
-    Transforms a function header.
-    • If unfold==True, rewrites a (possibly single-line) header so that each parameter appears on its own line.
-    • If unfold==False, folds a multi-line header into a single line.
-    Expects header_str to include its trailing colon.
-    """
-    header_body = header_str.strip()
-    if header_body.endswith(':'):
-        header_body = header_body[:-1].rstrip()
-    i1 = header_body.find('(')
-    i2 = header_body.rfind(')')
-    if i1 == -1 or i2 == -1 or i2 < i1:
-        return header_str  # Not a standard header.
-    prefix = header_body[:i1].rstrip()  # e.g. "def func"
-    params_str = header_body[i1+1:i2].strip()
-    indent_match = re.match(r'^(\s*)', header_str)
-    base_indent = indent_match.group(1) if indent_match else ""
-    
-    if unfold:
-        if not params_str:
-            return f"{prefix}():"
-        params = split_arguments(params_str)
-        new_lines = [f"{prefix}("]
-        inner_indent = base_indent + "    "  # 4-space indent for parameters.
-        for param in params:
-            if param:
-                new_lines.append(f"{inner_indent}{param},")
-        new_lines.append(f"{base_indent}):")
-        return "\n".join(new_lines)
-    else:
-        # Fold: join parameters with a comma and a space.
-        if params_str:
-            params = split_arguments(params_str)
-            new_params = ", ".join(p.strip() for p in params if p.strip())
-        else:
-            new_params = ""
-        return f"{prefix}({new_params}):"
-
-# ---------------------------
-# Command functions
-
-def list_functions(args):
-    code = get_code_from_input(args)
-    functions = get_functions_from_code(code)
-    if functions:
-        print("Available functions:")
-        for name in sorted(functions.keys()):
-            print(f"- {name}")
-    else:
-        print("No functions found.", file=sys.stderr)
-
-def view_function(args):
-    code = get_code_from_input(args)
-    # First, use the original AST extraction.
-    functions = get_functions_from_code(code)
-    if not args.function_name:
-        list_functions(args)
-        return
-
-    if args.function_name in functions:
-        func_code = functions[args.function_name]
-
-        # Apply clean-format if requested.
-        if args.clean_format:
-            func_code = remove_comments(func_code)
-            func_code = _align_assignments(func_code)
-            
-        # If header transformation (--fold or --unfold) is requested, transform only the header.
-        if args.fold or args.unfold:
-            # Try to match the header (which may span multiple lines)
-            # The pattern matches from the beginning up to the colon after the header.
-            m = re.match(r'^(\s*def\s+[A-Za-z_]\w*\s*\(.*?\))\s*:(.*)$', func_code, re.DOTALL)
-            if m:
-                header_part = m.group(1) + ":"
-                body_part = m.group(2)
-                # If both options are specified, report error.
-                if args.fold and args.unfold:
-                    sys.stderr.write("Cannot specify both --fold and --unfold.\n")
-                    sys.exit(1)
-                # Transform the header.
-                transformed_header = transform_func_header(header_part, unfold=args.unfold)
-                func_code = transformed_header + body_part
-            else:
-                # Fallback: transform the entire function code (may result in only header changes)
-                func_code = transform_func_header(func_code, unfold=args.unfold)
-                
-        print(func_code)
-    else:
-        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
-
-def remove_function(args):
-    code = get_code_from_input(args)
-    functions = get_functions_from_code(code)
-    if args.function_name not in functions:
-        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
-        return
-
-    tree = ast.parse(code)
-    new_nodes = []
-    for node in tree.body:
-        if not (isinstance(node, ast.FunctionDef) and node.name == args.function_name):
-            new_nodes.append(ast.unparse(node))
-    sys.stdout.write("\n".join(new_nodes))
-
-def add_function(args):
-    original_code = get_code_from_input(args)
-    with open(args.file_to_add, 'r') as f:
-        new_function_code = f.read()
-
-    if args.after:
-        if args.after not in get_functions_from_code(original_code):
-            print(f"Function '{args.after}' not found to add after.", file=sys.stderr)
+def add_command(args):
+    """Adds a function from a file to the script."""
+    existing_node = find_function_node(args.file, args.function_name)
+    if existing_node:
+        print(f"Warning: Function '{args.function_name}' already exists.")
+        response = input("Do you want to proceed and add it anyway? (y/n): ")
+        if response.lower() != 'y':
+            print("Aborting.")
             return
 
-        lines = original_code.splitlines()
-        new_lines = []
-        added = False
-        for line in lines:
-            new_lines.append(line)
-            if f"def {args.after}" in line:
-                indentation = len(line) - len(line.lstrip())
-                new_function_lines = new_function_code.splitlines()
-                for i, func_line in enumerate(new_function_lines):
-                    if i == 0:
-                        new_lines.append(func_line)
-                    else:
-                        new_lines.append(" " * indentation + func_line)
-                added = True
-        sys.stdout.write("\n".join(new_lines))
+    with open(args.new_file, 'r') as f:
+        new_source = f.read()
+    
+    with open(args.file, 'a') as f:
+        f.write(f"\n{new_source}")
+    print(f"Function '{args.function_name}' added to {args.file}.")
 
-    elif args.before:
-        if args.before not in get_functions_from_code(original_code):
-            print(f"Function '{args.before}' not found to add before.", file=sys.stderr)
-            return
-
-        lines = original_code.splitlines()
-        new_lines = []
-        added = False
-        for line in lines:
-            if f"def {args.before}" in line and not added:
-                indentation = len(line) - len(line.lstrip())
-                new_function_lines = new_function_code.splitlines()
-                for i, func_line in enumerate(new_function_lines):
-                    if i == 0:
-                        new_lines.append(func_line)
-                    else:
-                        new_lines.append(" " * indentation + func_line)
-                added = True
-            new_lines.append(line)
-        sys.stdout.write("\n".join(new_lines))
-
-    else:  # Default to adding at the top
-        sys.stdout.write(new_function_code + "\n\n" + original_code)
-
-def diff_functions(args):
-    code = get_code_from_input(args)
-    functions = get_functions_from_code(code)
-
-    if args.function1 not in functions:
-        print(f"Function '{args.function1}' not found.", file=sys.stderr)
-        return
-    if args.function2 not in functions:
-        print(f"Function '{args.function2}' not found.", file=sys.stderr)
+def replace_command(args):
+    """Replaces a function in the script with one from a file."""
+    with open(args.file, 'r') as f:
+        lines = f.readlines()
+    existing_node = find_function_node(args.file, args.function_name)
+    if not existing_node:
+        print(f"Error: Function '{args.function_name}' not found.")
         return
 
-    func1_code = functions[args.function1].splitlines()
-    func2_code = functions[args.function2].splitlines()
+    with open(args.new_file, 'r') as f:
+        new_source = f.read()
 
-    differ = difflib.UnifiedDiff()
-    diff = differ.compare(func1_code, func2_code, fromfile=args.function1, tofile=args.function2)
-    sys.stdout.writelines(diff)
+    new_lines = lines[:existing_node.lineno - 1] + new_source.splitlines(True) + lines[existing_node.end_lineno:]
+    
+    with open(args.file, 'w') as f:
+        f.writelines(new_lines)
+    print(f"Function '{args.function_name}' replaced in {args.file}.")
 
-def list_dependencies(args):
-    code = get_code_from_input(args)
-    tree = ast.parse(code)
-
-    if args.function_name not in get_functions_from_code(code):
-        print(f"Function '{args.function_name}' not found.", file=sys.stderr)
+def rename_command(args):
+    """Renames a function and all its call sites."""
+    func_node, call_nodes, source = find_function_and_calls(args.file, args.old_name)
+    if not func_node:
+        print(f"Error: Function '{args.old_name}' not found.")
         return
 
-    dependencies = set()
+    new_source = source.replace(f"def {args.old_name}", f"def {args.new_name}")
+    new_source = new_source.replace(f"{args.old_name}(", f"{args.new_name}(")
 
-    class CallVisitor(ast.NodeVisitor):
-        def visit_Call(self, node):
-            if isinstance(node.func, ast.Name):
-                func_name = node.func.id
-                if func_name in get_functions_from_code(code):
-                    dependencies.add(func_name)
-            self.generic_visit(node)
+    with open(args.file, 'w') as f:
+        f.write(new_source)
+    print(f"Function '{args.old_name}' and all its calls renamed to '{args.new_name}'.")
+
+def clean_command(args):
+    """Reformat a function or the entire script."""
+    try:
+        subprocess.run(['black', '--version'], capture_output=True, check=True)
+    except FileNotFoundError:
+        print("Error: 'black' formatter not found. Please install it with 'pip install black'.")
+        return
+    
+    command = ['black', args.file]
+    if args.function_name:
+        print("Note: 'black' reformats the entire file, not just a single function.")
+    
+    try:
+        subprocess.run(command, check=True)
+        print(f"Successfully formatted {args.file} with black.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error during formatting: {e}")
+
+def dependency_command(args):
+    """Generates a Graphviz diagram of function dependencies."""
+    try:
+        subprocess.run(['dot', '-V'], capture_output=True, check=True)
+    except FileNotFoundError:
+        print("Error: 'dot' from Graphviz not found. Please install it on your system.")
+        return
+    
+    dependencies = {}
+    with open(args.file, 'r') as f:
+        tree = ast.parse(f.read())
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == args.function_name:
-            visitor = CallVisitor()
-            visitor.visit(node)
-            break
+        if isinstance(node, ast.FunctionDef):
+            func_name = node.name
+            dependencies[func_name] = []
+            for sub_node in ast.walk(node):
+                if isinstance(sub_node, ast.Call) and isinstance(sub_node.func, ast.Name):
+                    called_func_name = sub_node.func.id
+                    if called_func_name != func_name and called_func_name not in dependencies[func_name]:
+                        dependencies[func_name].append(called_func_name)
+    
+    dot_source = "digraph G {\n"
+    for func, deps in dependencies.items():
+        for dep in deps:
+            dot_source += f'    "{func}" -> "{dep}";\n'
+    dot_source += "}"
 
-    print("Dependencies:")
-    for dep in sorted(list(dependencies)):
-        print(f"- {dep}")
+    process = subprocess.Popen(['dot', '-Tsvg'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    output, _ = process.communicate(dot_source)
+    
+    with open(args.output, 'w') as f:
+        f.write(output)
+    
+    print(f"Dependency graph saved to {args.output}")
+
+def remove_command(args):
+    """Removes a function from a Python script."""
+    with open(args.file, 'r') as f:
+        lines = f.readlines()
+    existing_node = find_function_node(args.file, args.function_name)
+    if not existing_node:
+        print(f"Error: Function '{args.function_name}' not found.")
+        return
+    
+    start_line = existing_node.lineno - 1
+    end_line = existing_node.end_lineno
+    new_lines = lines[:start_line] + lines[end_line:]
+    
+    with open(args.file, 'w') as f:
+        f.writelines(new_lines)
+    print(f"Function '{args.function_name}' removed from {args.file}.")
+
+def view_command(args):
+    """Views a single function with various formatting options."""
+    source = get_function_source(args.file, args.function_name)
+    if not source:
+        print(f"Error: Function '{args.function_name}' not found.")
+        return
+
+    lines = source.splitlines()
+
+    if args.no_comments:
+        lines = [re.sub(r'(?<![("])#.*$', '', line).rstrip() for line in lines]
+        lines = [line for line in lines if line.strip()]
+
+    if args.clean:
+        max_equal_pos = 0
+        for line in lines:
+            if '=' in line and '==' not in line and '>=' not in line and '<=' not in line:
+                pos = line.find('=')
+                max_equal_pos = max(max_equal_pos, pos)
+        
+        if max_equal_pos > 0:
+            new_lines = []
+            for line in lines:
+                if '=' in line and '==' not in line and '>=' not in line and '<=' not in line:
+                    pos = line.find('=')
+                    new_lines.append(line[:pos].rstrip().ljust(max_equal_pos) + ' ' + line[pos:])
+                else:
+                    new_lines.append(line)
+            lines = new_lines
+
+    if args.unfold:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == args.function_name:
+                sig_parts = []
+                for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs:
+                    arg_str = arg.arg
+                    if arg.annotation:
+                        ann_str = ast.unparse(arg.annotation).strip()
+                        arg_str += f": {ann_str}"
+                    sig_parts.append(arg_str)
+                
+                new_lines = []
+                new_lines.append(f"def {node.name}(\n")
+                indent = ' ' * (node.col_offset + 4)
+                for part in sig_parts:
+                    new_lines.append(f"{indent}{part},\n")
+                new_lines.append(f"{' ' * node.col_offset}):")
+                new_lines.extend(lines[node.body[0].lineno-1:])
+                lines = new_lines
+                break
+    
+    print('\n'.join(lines))
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="A command-line tool to manage Python functions.",
-        add_help=False)
-    parser.add_argument("-f", "--file",
-                        help="Specify a Python file to operate on. If not provided, reads from stdin.")
-
+    """Main entry point for the CLI tool."""
+    parser = argparse.ArgumentParser(description='A swiss army knife for Python and Jupyter notebooks.', epilog="""
+    To get help for a specific command, use:
+    pyfun.py <command> -h
+    """, formatter_class=argparse.RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    list_parser = subparsers.add_parser('list', help='List all functions in the input.')
-    list_parser.set_defaults(func=list_functions)
+    # jup2py command
+    jup2py_parser = subparsers.add_parser('jup2py', help='Convert a Jupyter notebook to a Python script.')
+    jup2py_parser.add_argument('-f', '--file', required=True, help='Input Jupyter notebook file.')
+    jup2py_parser.add_argument('--hide-non-code', action='store_true', help='Hide non-code cells from the output.')
+    jup2py_parser.set_defaults(func=jup2py_command)
+    
+    # py2jup command
+    py2jup_parser = subparsers.add_parser('py2jup', help='Convert a Python script to a Jupyter notebook.')
+    py2jup_parser.add_argument('-f', '--file', required=True, help='Input Python script file.')
+    py2jup_parser.add_argument('-o', '--output', required=True, help='Output Jupyter notebook file.')
+    py2jup_parser.add_argument('--single-cell', action='store_true', help='Convert the entire script into a single notebook cell.')
+    py2jup_parser.set_defaults(func=py2jup_command)
 
-    view_parser = subparsers.add_parser('view', help='View a specific function. Lists all if no name. -c to exclude comments and align assignments.')
-    view_parser.add_argument("function_name", nargs='?', help="Name of the function to view.")
-    view_parser.add_argument("-c", "--clean-format", action="store_true", help="Remove comments and align assignment operators.")
-    view_parser.add_argument("--fold", action="store_true", help="Fold the function header into a single line.")
-    view_parser.add_argument("--unfold", action="store_true", help="Unfold the function header (one argument per line).")
-    view_parser.set_defaults(func=view_function)
+    # list command
+    list_parser = subparsers.add_parser('list', help='List functions in a Python script.')
+    list_parser.add_argument('-f', '--file', required=True, help='Input Python script file.')
+    list_parser.add_argument('--search', help='Substring to search for in function names.')
+    list_parser.set_defaults(func=list_command)
 
-    remove_parser = subparsers.add_parser('remove', help='Remove a function.')
-    remove_parser.add_argument("function_name", help="Name of the function to remove.")
-    remove_parser.set_defaults(func=remove_function)
+    # explain command
+    explain_parser = subparsers.add_parser('explain', help='Print the source code of a function with comments.')
+    explain_parser.add_argument('-f', '--file', required=True, help='Input Python script file.')
+    explain_parser.add_argument('function_name', help='Name of the function to explain.')
+    explain_parser.set_defaults(func=explain_command)
 
-    add_parser = subparsers.add_parser('add', help='Add functions from a file. Default: first.')
-    add_parser.add_argument("file_to_add", help="Path to the file containing the function(s) to add.")
-    add_parser.add_argument("-b", "--before", help="Add the function(s) before this function.")
-    add_parser.add_argument("-a", "--after", help="Add the function(s) after this function.")
-    add_parser.set_defaults(func=add_function)
+    # diff command
+    diff_parser = subparsers.add_parser('diff', help='Show a friendly diff between a function in the script and a file.')
+    diff_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    diff_parser.add_argument('function_name', help='Name of the function to diff.')
+    diff_parser.add_argument('new_file', help='File containing the new function code.')
+    diff_parser.set_defaults(func=diff_command)
 
-    diff_parser = subparsers.add_parser('diff', help='Show diff between two functions.')
-    diff_parser.add_argument("function1", help="Name of the first function.")
-    diff_parser.add_argument("function2", help="Name of the second function.")
-    diff_parser.set_defaults(func=diff_functions)
+    # add command
+    add_parser = subparsers.add_parser('add', help='Add a function from a file to the script.')
+    add_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    add_parser.add_argument('function_name', help='Name of the function to add.')
+    add_parser.add_argument('new_file', help='File containing the new function code.')
+    add_parser.set_defaults(func=add_command)
 
-    deps_parser = subparsers.add_parser('deps', help='List dependencies of a function.')
-    deps_parser.add_argument("function_name", help="Name of the function to list dependencies for.")
-    deps_parser.set_defaults(func=list_dependencies)
+    # replace command
+    replace_parser = subparsers.add_parser('replace', help='Replace a function in the script with one from a file.')
+    replace_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    replace_parser.add_argument('function_name', help='Name of the function to replace.')
+    replace_parser.add_argument('new_file', help='File containing the new function code.')
+    replace_parser.set_defaults(func=replace_command)
 
-    if len(sys.argv) == 1:
-        parser.print_help(sys.stderr)
-        sys.exit(1)
+    # rename command
+    rename_parser = subparsers.add_parser('rename', help='Rename a function and all its call sites.')
+    rename_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    rename_parser.add_argument('old_name', help='Old function name.')
+    rename_parser.add_argument('new_name', help='New function name.')
+    rename_parser.set_defaults(func=rename_command)
 
+    # clean command
+    clean_parser = subparsers.add_parser('clean', help='Reformat a file or a specific function using black.')
+    clean_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    clean_parser.add_argument('--function-name', help='Name of the function to reformat (note: black reformats the entire file).')
+    clean_parser.set_defaults(func=clean_command)
+
+    # dependency command
+    dependency_parser = subparsers.add_parser('dependency', help='Generate a Graphviz dependency diagram for a script.')
+    dependency_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    dependency_parser.add_argument('-o', '--output', required=True, help='Output SVG file for the graph.')
+    dependency_parser.set_defaults(func=dependency_command)
+    
+    # remove command
+    remove_parser = subparsers.add_parser('remove', help='Removes a function from a Python script.')
+    remove_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    remove_parser.add_argument('function_name', help='Name of the function to remove.')
+    remove_parser.set_defaults(func=remove_command)
+
+    # view command
+    view_parser = subparsers.add_parser('view', help='Views a single function with various formatting options.')
+    view_parser.add_argument('-f', '--file', required=True, help='Target Python script file.')
+    view_parser.add_argument('function_name', help='Name of the function to view.')
+    view_parser.add_argument('-nc', '--no-comments', action='store_true', help='Print function without comments.')
+    view_parser.add_argument('-c', '--clean', action='store_true', help='Align subsequent rows at "=".')
+    view_parser.add_argument('--unfold', action='store_true', help='Unfold function definition, with one argument per line.')
+    view_parser.add_argument('--fold', action='store_true', help='Fold function definition, with all arguments on one line (default).')
+    view_parser.set_defaults(func=view_command)
+    
     args = parser.parse_args()
-
+    
     if hasattr(args, 'func'):
         args.func(args)
     else:
         parser.print_help()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
