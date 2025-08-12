@@ -14,6 +14,30 @@ warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning
 import math
 # LAST UPDATED ON:  11 Aug 2025, 11pm
 
+'''
+USAGE:
+country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year
+
+
+$ tbltool.py -f test.tsv filter_columns --is-numeric --index sample --keep_columns country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year -v | less -S
+
+# melt
+tbltool.py -f test.tsv melt --id_vars sample,country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year
+
+
+tbltool.py -f test.tsv heatmap   --index sample   --row_annotations country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year   --zscore   -o /tmp/t.pdf --no_annot_legend --figure_size '16,6'
+
+
+tbltool.py -f test.tsv pca   --index sample   --color_by country_of_collection_site   --shape_by excision_year   --scale --no_biplot --top_loadings 10   --legend_outside   --figure_size 12,6   -o /tmp/t.pdf
+
+tbltool.py -f test.tsv detect-outliers \
+  --index sample --top_k 5 \
+  --plot_bars --bars_mode by_feature --bars_max_outliers 10 \
+  --bars_output /tmp/iforest_features.pdf
+
+
+'''
+
 # Default chunk size when processing input in low-memory mode.
 CHUNK_SIZE = 10000
 
