@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import numpy as np
 import argparse
 import re
 import os
@@ -10,19 +11,84 @@ from collections import Counter
 import csv  # For CSV formatting
 import warnings
 warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
-
-# LAST UPDATED ON:  29 July 2025
+import math
+# LAST UPDATED ON:  11 Aug 2025, 11pm
 
 # Default chunk size when processing input in low-memory mode.
 CHUNK_SIZE = 10000
 
+# Operations that support --lowmem (chunked) processing
+LOWMEM_OPS = [
+    "stats",
+    "factorize",
+    "filter",
+    "replace",
+    "strip",
+    "prefix",
+    "cleanup_values",
+    "extract",
+]
+
 # --------------------------
 # Utility Functions
 # --------------------------
-def extract_numeric_columns(df, exclude_cols=None):
+from scipy.cluster.hierarchy import linkage
+from scipy.spatial.distance import pdist, squareform
+
+def _corr_from_df(M: pd.DataFrame, method="spearman") -> pd.DataFrame:
+    """
+    Pairwise correlation with robust NA handling and clipping to [-1, 1].
+    Ensures diagonal==1 and no NaN/Inf anywhere.
+    """
+    corr = M.corr(method=method, min_periods=1).astype(float)
+    corr = (corr + corr.T) / 2.0                # symmetrize
+    np.fill_diagonal(corr.values, 1.0)
+    corr.replace([np.inf, -np.inf], np.nan, inplace=True)
+    corr = corr.fillna(0.0).clip(-1.0, 1.0)
+    return corr
+
+def _link_from_corr(corr: pd.DataFrame, method="average"):
+    """
+    Convert a correlation matrix to a SciPy linkage via 1 - corr.
+    Safe against NaN/Inf and non-symmetric inputs.
+    """
+    c = (corr + corr.T) / 2.0
+    np.fill_diagonal(c.values, 1.0)
+    c = c.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(-1.0, 1.0)
+    condensed = squareform(1.0 - c.values, checks=False)
+    condensed = np.nan_to_num(condensed, nan=1.0, posinf=1.0, neginf=1.0)
+    return linkage(condensed, method=method)
+
+def _helper_extract_numeric_columns(df, exclude_cols=None):
+    """
+    Return (numeric_df, numeric_columns) where columns are coerced to numeric
+    if *all* non-null values are numeric. Columns in exclude_cols are ignored.
+    """
+    if exclude_cols is None:
+        exclude_cols = []
+    numeric_columns = []
+    numeric_df = pd.DataFrame(index=df.index)
+    for col in df.columns:
+        if col in exclude_cols:
+            continue
+        converted = pd.to_numeric(df[col], errors='coerce')
+        non_null = df[col].dropna()
+        if not non_null.empty and converted[non_null.index].isna().any():
+            continue
+        numeric_columns.append(col)
+        numeric_df[col] = converted
+    return numeric_df, numeric_columns
+
+# Back-compat alias so any older calls still work
+extract_numeric_columns = _helper_extract_numeric_columns
+
+def _helper_extract_numeric_columns(df, exclude_cols=None):
     """
     Extract numeric columns from the DataFrame by attempting to convert each column
     using pd.to_numeric. Columns whose non-null values fail conversion are omitted.
+
+    Non-numeric columns that are not explicitly excluded via --index/--row_annotations
+    are simply ignored.
 
     Parameters:
       df (pd.DataFrame): The input DataFrame.
@@ -148,7 +214,7 @@ def _format_numeric_columns(df):
 def _setup_arg_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "A command-line tool for manipulating table fields.\n\n"
+            "A samtools-like command-line tool for manipulating table fields.\n\n"
             "Usage:\n"
             "    tbl.py [GLOBAL_OPTIONS] <operation> [OPERATION_SPECIFIC_OPTIONS]\n\n"
             "Global Options affect how input is read and overall behavior.\n"
@@ -174,7 +240,7 @@ def _setup_arg_parser():
     )
     global_options.add_argument(
         "--ignore_lines", default="^#",
-        help="Ignore lines starting with this pattern (default: '^#')."
+        help="Regex for lines to ignore (default: '^#' means lines starting with '#')."
     )
     global_options.add_argument(
         "--verbose", action="store_true",
@@ -188,13 +254,17 @@ def _setup_arg_parser():
         "--lowmem", action="store_true",
         help="Process data in chunks to reduce memory usage. Not all operations support low-memory mode."
     )
+    global_options.add_argument(
+        "--chunksize", type=int, default=CHUNK_SIZE,
+        help=f"Chunk size for --lowmem (default: {CHUNK_SIZE})."
+    )
     
     # Subparsers for operations
     subparsers = parser.add_subparsers(dest="operation", 
                                        help="Available operations. Use 'tbl.py <operation> --help' for details.")
     
     # TRANSPOSE
-    parser_transpose = subparsers.add_parser(
+    subparsers.add_parser(
         "transpose",
         help="Transpose the input table. The first column's values are used as the header in the new output table."
     )
@@ -206,8 +276,9 @@ def _setup_arg_parser():
     parser_move.add_argument("-j", "--dest_column", required=True, 
                              help="Destination column (1-indexed or name).")
     
-    # COL_INSERT
-    parser_col_insert = subparsers.add_parser("col_insert", help="Insert a new column. Required: --column and --value.")
+    # COL_INSERT (add_col)
+    parser_col_insert = subparsers.add_parser("add_col",
+                                              help="Insert a new column. Required: --column and --value.")
     parser_col_insert.add_argument("-n", "--column", required=True, 
                                    help="Column position (1-indexed or name) for insertion.")
     parser_col_insert.add_argument("-v", "--value", required=True, 
@@ -215,17 +286,18 @@ def _setup_arg_parser():
     parser_col_insert.add_argument("--new_header", default="new_column", 
                                    help="Header name for the new column (default: 'new_column').")
     
-    # COL_DROP
-    parser_col_drop = subparsers.add_parser("col_drop", help="Drop columns. Required: --column.")
+    # COL_DROP (drop_col)
+    parser_col_drop = subparsers.add_parser("drop_col",
+                                            help="Drop columns. Required: --column.")
     parser_col_drop.add_argument("-n", "--column", required=True, 
                                  help="Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns.")
     
-    # GREP
-    parser_grep = subparsers.add_parser("grep", 
+    # GREP rows (filter)
+    parser_grep = subparsers.add_parser("filter", 
                             help="Filter rows. Required: --column and one of --pattern, --starts_with, --ends_with, or --word_file.")
     grep_group = parser_grep.add_mutually_exclusive_group(required=True)
     parser_grep.add_argument("-n", "--column", required=True, 
-                             help="Column to apply the grep filter (1-indexed or name).")
+                             help="Column to apply the filter (1-indexed or name).")
     grep_group.add_argument("-p", "--pattern", help="Regex pattern to search for.")
     grep_group.add_argument("--starts_with", help="String that the column value should start with.")
     grep_group.add_argument("--ends_with", help="String that the column value should end with.")
@@ -239,8 +311,8 @@ def _setup_arg_parser():
     parser_grep.add_argument("-v", "--invert", action="store_true",
                                help="Invert match: select rows that do NOT match the specified criteria.")
 
-    # AGGR
-    parser_aggr = subparsers.add_parser("aggr",
+    # AGGR (aggregate)
+    parser_aggr = subparsers.add_parser("aggregate",
         help="Group and aggregate data via common functions: sum, mean, list, value_counts, entropy.")
     parser_aggr.add_argument("--group", required=True,
                              help="Comma-separated list of column(s) to group by.")
@@ -253,8 +325,8 @@ def _setup_arg_parser():
     parser_aggr.add_argument("--melted", action="store_true",
                              help="Indicate that the input is in melted (long) format.")
 
-    # SPLIT
-    parser_split = subparsers.add_parser("split", help="Split a column. Required: --column and --delimiter.")
+    # SPLIT (split_col)
+    parser_split = subparsers.add_parser("split_col", help="Split a column. Required: --column and --delimiter.")
     parser_split.add_argument("-n", "--column", required=True,
                               help="Column to split (1-indexed or name).")
     parser_split.add_argument("-d", "--delimiter", required=True,
@@ -262,8 +334,8 @@ def _setup_arg_parser():
     parser_split.add_argument("--new_header_prefix", default="split_col",
                               help="Prefix for the new columns (default: 'split_col').")
     
-    # JOIN
-    parser_join = subparsers.add_parser("join", 
+    # JOIN (join_col)
+    parser_join = subparsers.add_parser("join_col", 
         help="Join columns. Required: --column. Optionally, --target_column specifies the destination for the joined column.")
     parser_join.add_argument("-n", "--column", required=True,
                              help="Comma-separated list of columns (1-indexed or names) to join.")
@@ -274,8 +346,8 @@ def _setup_arg_parser():
     parser_join.add_argument("-j", "--target_column",
                              help="Target column (1-indexed or name) where the joined column will be placed.")
     
-    # TR (Translate)
-    parser_tr = subparsers.add_parser("tr", 
+    # TR (replace)
+    parser_tr = subparsers.add_parser("replace", 
         help="Translate values. Required: --column and either --dict_file or --from_val with --to_val.")
     parser_tr.add_argument("-n", "--column", required=True,
                              help="Column to translate (1-indexed or name).")
@@ -313,8 +385,8 @@ def _setup_arg_parser():
     parser_cleanup_values.add_argument("-n", "--column", required=True,
                                         help="Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column.")
     
-    # PREFIX ADD
-    parser_prefix_add = subparsers.add_parser("prefix_add",
+    # PREFIX ADD (prefix)
+    parser_prefix_add = subparsers.add_parser("prefix",
                                               help="Add a prefix to column values. Required: --column and --string.")
     parser_prefix_add.add_argument("-n", "--column", required=True,
                                    help="Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column.")
@@ -323,8 +395,8 @@ def _setup_arg_parser():
     parser_prefix_add.add_argument("-d", "--delimiter", default="",
                                    help="Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences.")
     
-    # VALUE COUNTS
-    parser_value_counts = subparsers.add_parser("value_counts",
+    # VALUE COUNTS (stats)
+    parser_value_counts = subparsers.add_parser("stats",
                                                 help="Count top occurring values. Required: --column.")
     parser_value_counts.add_argument("-T", "--top_n", type=int, default=5,
                                      help="Number of top values to display (default: 5).")
@@ -343,15 +415,15 @@ def _setup_arg_parser():
     parser_strip.add_argument("--in_place", action="store_true",
                               help="Modify the column in place instead of creating a new column.")
     
-    # NUMERIC MAP
-    parser_numeric_map = subparsers.add_parser("numeric_map",
+    # NUMERIC MAP (factorize)
+    parser_numeric_map = subparsers.add_parser("factorize",
                                                help="Map unique string values to numbers. Required: --column.")
     parser_numeric_map.add_argument("-n", "--column", required=True,
                                     help="Column (1-indexed or name) whose unique values are to be mapped to numbers.")
     parser_numeric_map.add_argument("--new_header", help="Header for the new numeric mapping column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME').")
     
-    # REGEX CAPTURE
-    parser_regex_capture = subparsers.add_parser("regex_capture",
+    # REGEX CAPTURE (extract)
+    parser_regex_capture = subparsers.add_parser("extract",
                                                  help="Capture substrings using a regex capturing group. Required: --column and --pattern.")
     parser_regex_capture.add_argument("-n", "--column", required=True,
                                       help="Column on which to apply the regex (1-indexed or name).")
@@ -375,9 +447,9 @@ def _setup_arg_parser():
                              help="Output as plain TSV without pretty-print alignment.")
     parser_view.set_defaults(pretty_print=True)
     
-    # CUT (Enhanced)
-    parser_cut = subparsers.add_parser("cut",
-                                       help="Cut/select columns. Provide either a regex pattern or, if --list is specified, a list of column names.")
+    # CUT (select)
+    parser_cut = subparsers.add_parser("select",
+                                       help="Select columns. Provide either a regex pattern or, if --list is specified, a list of column names.")
     parser_cut.add_argument("pattern", nargs="?", default=None,
                         help=("Either a regex pattern for matching column names "
                               "or, when --list is specified, a comma-separated list of column names (or a file containing column names)."))
@@ -386,9 +458,9 @@ def _setup_arg_parser():
     parser_cut.add_argument("--list", action="store_true",
                         help="Interpret the pattern as a comma-separated list of column names for selection in the given order.")
     
-    # VIEWHEADER
-    parser_viewheader = subparsers.add_parser("viewheader",
-                                              help="Display header names and positions.")
+    # VIEWHEADER (headers)
+    subparsers.add_parser("headers",
+                          help="Display header names and positions.")
     
     # ROW_INSERT
     parser_row_insert = subparsers.add_parser("row_insert",
@@ -404,9 +476,9 @@ def _setup_arg_parser():
     parser_row_drop.add_argument("-i", "--row_idx", type=int, required=True,
                                  help="Row position to drop (1-indexed, 0 drops the header).")
     
-    # ggplot subcommand using Plotnine
-    parser_ggplot = subparsers.add_parser("ggplot",
-                                          help="Generate a ggplot using Plotnine and save to a PDF file.")
+    # ggplot subcommand using Plotnine (plot)
+    parser_ggplot = subparsers.add_parser("plot",
+                                          help="Generate a ggplot using Plotnine and save to a PDF/PNG file.")
     parser_ggplot.add_argument("--geom", required=True, choices=["boxplot", "bar", "point", "hist", "tile", "pie"],
                                help="Type of plot to generate. (Note: 'pie' is not supported in ggplot mode; use the matplotlib subcommand instead.)")
     parser_ggplot.add_argument("--x", required=True, help="Column name for x aesthetic.")
@@ -426,10 +498,12 @@ def _setup_arg_parser():
     parser_ggplot.add_argument("--value_vars", help="Comma-separated list of columns to melt. If not provided, all columns not in id_vars are melted.")
     parser_ggplot.add_argument("--figure_size", default="8,6",
                                help="Set figure size as width,height in inches (default: 8,6).")
+    parser_ggplot.add_argument("--dont_replace_dots_in_colnames", action="store_true",
+                               help="Do not replace '.' with '_' in column names.")
     
-    # matplotlib subcommand for venn diagrams
-    parser_mpl = subparsers.add_parser("matplotlib",
-                                       help="Generate a matplotlib-based plot (supports Venn diagrams) and save to a PDF file.")
+    # matplotlib subcommand for venn diagrams (plot_mpl)
+    parser_mpl = subparsers.add_parser("plot_mpl",
+                                       help="Generate a matplotlib-based plot (supports Venn diagrams) and save to a PDF/PNG file.")
     parser_mpl.add_argument("--mode", required=True, choices=["venn2", "venn3"],
                            help="Plot mode for matplotlib: 'venn2' or 'venn3'.")
     parser_mpl.add_argument("--colnames", required=True,
@@ -452,8 +526,8 @@ def _setup_arg_parser():
     parser_melt.add_argument("--value_name", default="value",
                              help="Name for the new value column (default: 'value').")
     
-    # UNMELT
-    parser_unmelt = subparsers.add_parser("unmelt",
+    # UNMELT (pivot)
+    parser_unmelt = subparsers.add_parser("pivot",
                                           help="Pivot the melted table back to wide format.")
     parser_unmelt.add_argument("--index", required=True,
                                help="Column name to use as the index (row identifiers).")
@@ -462,8 +536,8 @@ def _setup_arg_parser():
     parser_unmelt.add_argument("--value", required=True,
                                help="Column name that contains the values.")
     
-    # ADD_METADATA
-    parser_add_metadata = subparsers.add_parser("add_metadata",
+    # ADD_METADATA (join_meta)
+    parser_add_metadata = subparsers.add_parser("join_meta",
                                                 help="Merge a metadata file into the main table based on key columns.")
     parser_add_metadata.add_argument("--meta", required=True,
                                      help="Path to the metadata file (CSV).")
@@ -474,8 +548,8 @@ def _setup_arg_parser():
     parser_add_metadata.add_argument("--meta_sep", default=None,
                                      help="Field separator for the metadata file. If not provided, the global --sep is used.")
 
-    # FILTER_COLUMNS
-    parser_filter = subparsers.add_parser("filter_columns",
+    # FILTER_COLUMNS (filter_cols)
+    parser_filter = subparsers.add_parser("filter_cols",
         help="Filter columns based on criteria. Use --is-numeric, --is-integer, --is-same, --min_value, --max_value. With -v, selection is inverted.")
     parser_filter.add_argument("--is-numeric", action="store_true",
                                help="Match columns that are numeric (all non-null values convert to numbers).")
@@ -494,29 +568,121 @@ def _setup_arg_parser():
     parser_filter.add_argument("--keep_columns",
                                help="Comma-separated list of column names to always keep (ignored during filtering) and placed immediately after the index column in the output.")
     
+
     # PCA Plot
     parser_pca = subparsers.add_parser("pca",
-        help="Perform principal component analysis on numeric columns and plot PC1 vs PC2. Optionally label points with --index and color them using --color_by.")
+                                       help=("Perform PCA on numeric columns and plot PC1 vs PC2. "
+                                             "Optional color/shape legends outside, plus a loadings panel "
+                                             "(VizDimLoadings-style) for PC1/PC2.")
+                                       )
     parser_pca.add_argument("--index",
                             help="Column (1-indexed or name) to use as point labels (not used in PCA).")
     parser_pca.add_argument("--color_by",
-                            help="Column (1-indexed or name) to use for coloring points (treated as factor).")
-    parser_pca.add_argument("--figure_size", default="8,6",
-                            help="Figure size as width,height in inches (default: 8,6).")
+                            help="Column (1-indexed or name) for point colors (categorical).")
+    parser_pca.add_argument("--shape_by",
+                            help="Column (1-indexed or name) for point marker shape (categorical).")
+    parser_pca.add_argument("--figure_size", default="12,8",
+                            help="Figure size as width,height in inches (default: 12,8).")
     parser_pca.add_argument("-o", "--output", required=True,
                             help="Output file name (pdf or png).")
     
-    # Correlation Heatmap
-    parser_corr = subparsers.add_parser("correlation_heatmap",
-        help="Compute Spearman correlation on numeric columns and plot as a heatmap with correlation values.")
-    parser_corr.add_argument("--figure_size", default="8,6",
-                             help="Figure size as width,height in inches (default: 8,6).")
-    parser_corr.add_argument("-o", "--output", required=True,
-                             help="Output file name (pdf or png).")
+    # PCA controls
+    parser_pca.add_argument("--scale", action="store_true",
+                            help="Z-scale features before PCA.")
+    parser_pca.add_argument("--no_biplot", action="store_true",
+                            help="Disable arrows for variable loadings in the scatter.")
+    parser_pca.add_argument("--show_loadings", type=int, default=0,
+                            help="(deprecated; use --top_loadings) kept for backward compat.")
+    parser_pca.add_argument("--top_loadings", type=int, default=10,
+                            help="Top-N features by |loading| (across PC1/PC2) to display in loadings panel.")
+    
+    # Layout/legend
+    parser_pca.add_argument("--legend_outside", action="store_true",
+                            help="Place color/shape legends outside the scatter (right side).")
+    parser_pca.add_argument("--loadings_style", choices=["dots","heatmap"], default="dots",
+                            help="Style for loadings panel under the scatter (default: dots).")
+    parser_pca.add_argument("--loadings_height", type=float, default=0.28,
+                            help="Relative height of the loadings panel (0–1, default 0.28).")
+    
+    
+    # DETECT OUTLIERS (detect_outliers)
+    parser_if = subparsers.add_parser("detect_outliers",
+                                      help="Detect outliers with Isolation Forest and annotate rows.")
+    parser_if.add_argument("--index", help="Label column (1-indexed or name) for readability.")
+    parser_if.add_argument("--exclude", help="Comma-separated columns to exclude from features.")
+    parser_if.add_argument("--contamination", default="auto",
+                           help="Float (0,0.5] or 'auto' (default).")
+    parser_if.add_argument("--n_estimators", type=int, default=200)
+    parser_if.add_argument("--random_state", type=int, default=42)
+    parser_if.add_argument("--top_k", type=int, default=3,
+                           help="Top-N features by |z| to summarize per outlier.")
+    parser_if.add_argument("--no_scale", action="store_true",
+                           help="Do not z-scale features before modeling.")
+    parser_if.add_argument("--only_outliers", action="store_true",
+                           help="Emit only outlier rows in the output.")
+    
+    parser_if.add_argument("--plot_bars", action="store_true",
+                           help="Also save a grid of bar plots.")
+    parser_if.add_argument("--bars_output",
+                        help="Output image for bar plots (pdf or png). Default: iforest_bars.pdf")
+    parser_if.add_argument("--bars_max_outliers", type=int, default=12,
+                           help="Max number of panels in the bar-plot grid (default 12).")
+    parser_if.add_argument("--bars_figsize", default="12,8",
+                           help="Figure size width,height for the bar-plot grid (default 12,8).")
+    parser_if.add_argument("--bars_mode", choices=["by_sample","by_feature"], default="by_feature",
+                           help="Bar-plot layout: 'by_feature' (one subplot per outlier feature across samples) "
+                           "or 'by_sample' (one subplot per outlier sample with its top-K features).")
 
-
+    # HEATMAP
+    parser_heatmap = subparsers.add_parser(
+        "heatmap",
+        help=("Heatmap of samples (rows) × features (columns). "
+              "Use --corr for feature–feature Spearman correlation.")
+    )
+    parser_heatmap.add_argument("--index", required=True,
+                                help="Column (name or 1-indexed) with sample IDs for row labels.")
+    parser_heatmap.add_argument("--row_annotations",
+                                help="Comma-separated sample annotation columns to show as colored strips.")
+    parser_heatmap.add_argument("--corr", action="store_true",
+                                help="Plot a feature–feature correlation heatmap instead.")
+    parser_heatmap.add_argument("--zscore", action="store_true",
+                                help="Z-score features (columns) before plotting.")
+    parser_heatmap.add_argument("--distance", choices=["1-corr", "euclidean"], default="1-corr",
+                                help="Distance for dendrograms (default: 1-corr).")
+    parser_heatmap.add_argument("--linkage", choices=["average","single","complete","ward"], default="average",
+                                help="Linkage method for clustering.")
+    parser_heatmap.add_argument("--no_row_dendro", action="store_true",
+                                help="Disable row dendrogram.")
+    parser_heatmap.add_argument("--no_col_dendro", action="store_true",
+                                help="Disable column dendrogram.")
+    parser_heatmap.add_argument("--no_cluster", action="store_true",
+                                help="Shorthand to disable both row and column dendrograms.")
+    parser_heatmap.add_argument("--figure_size", default="10,8",
+                                help="Width,height in inches, e.g. '10,8'.")
+    parser_heatmap.add_argument("--cmap", default=None,
+                                help="Matplotlib colormap name (defaults to 'bwr' when zscored/corr, else 'viridis').")
+    parser_heatmap.add_argument("--grid_linewidth", type=float, default=0.0,
+                                help="Grid line width between tiles.")
+    parser_heatmap.add_argument("--show_values", action="store_true",
+                                help="Write numeric values on tiles.")
+    parser_heatmap.add_argument("--values_fmt", default=".2f",
+                                help="Format for --show_values (default: .2f).")
+    parser_heatmap.add_argument("--xtick_fontsize", type=int, default=8)
+    parser_heatmap.add_argument("--ytick_fontsize", type=int, default=7)
+    parser_heatmap.add_argument("--no_annot_legend", dest="annot_legend", action="store_false", default=True,
+                                help="Disable legends for annotation strips (enabled by default).")
+    parser_heatmap.add_argument("--right_pad", type=float, default=0.84,
+                                help="Figure right padding (0-1) to make space for legends (default: 0.84).")
+    parser_heatmap.add_argument("--cbar_left", action="store_true",
+                                help="Place colorbar on the left side (default places it on the right).")
+    parser_heatmap.add_argument("--max_labels", type=int, default=200,
+                                help="Auto-hide x/y tick labels if there are more than this many (default: 200).")
+    parser_heatmap.add_argument("-o", "--output", required=True,
+                                help="Output file name (.pdf or .png).")
+    
+    # KV UNPACK (kv_unpack)
     parser_unpack = subparsers.add_parser(
-        "unpack_column",
+        "kv_unpack",
         help=("Unpack a column containing key-value pairs into separate columns.\n"
               "The column is split using a field separator (default: ';') and a key-value separator (default: '=').\n"
               "Specify the keys to extract using --keys (comma-separated). If a key is missing in a row, NA is used.\n"
@@ -607,129 +773,682 @@ def _handle_unpack_column(df, args, input_sep, is_header_present, row_idx_col_na
     
     return df
 
-def _handle_pca(df, args, input_sep, is_header_present, row_index_col):
-    import pandas as pd
-    from plotnine import ggplot, aes, geom_point, ggtitle, theme, element_text, theme_matplotlib
-    from sklearn.decomposition import PCA
 
-    # Parse the figure size argument (expected format: "width,height")
+
+
+
+
+def _handle_pca(df, args, input_sep, is_header_present, row_idx_col):
+    """
+    PCA scatter with optional outside legends and a loadings panel.
+    - Color by a categorical column (--color_by)
+    - Shape by a categorical column (--shape_by)
+    - Loadings panel below the scatter:
+        * --loadings_style dots (VizDimLoadings style) or heatmap
+        * --top_loadings N picks the top |loading| across PC1/PC2
+    """
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+    import math
+
+    # Figure size
     try:
         width, height = map(float, args.figure_size.split(','))
     except Exception as e:
-        raise ValueError("Invalid format for --figure_size. Expected format: width,height") from e
+        raise ValueError("Invalid format for --figure_size. Expected width,height") from e
 
-    # Build list of columns to exclude from numeric conversion (e.g., labeling columns)
-    exclude = []
-    if args.index:
-        exclude.append(args.index)
-    if args.color_by:
-        exclude.append(args.color_by)
+    # Resolve optional columns
+    label_col = None
+    color_col = None
+    shape_col = None
+    if getattr(args, "index", None):
+        idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
+        label_col = df.columns[idx]
+    if getattr(args, "color_by", None):
+        idx = _parse_column_arg(args.color_by, df.columns, is_header_present, "color_by")
+        color_col = df.columns[idx]
+    if getattr(args, "shape_by", None):
+        idx = _parse_column_arg(args.shape_by, df.columns, is_header_present, "shape_by")
+        shape_col = df.columns[idx]
 
-    # Use extract_numeric_columns to obtain numeric columns and the converted DataFrame
+    # Numeric slice
+    exclude = [c for c in [label_col, color_col, shape_col] if c]
     numeric_df, numeric_columns = extract_numeric_columns(df, exclude_cols=exclude)
     if not numeric_columns:
         raise ValueError("No numeric columns found in the dataset for PCA.")
-    
-    # Drop rows with missing values in the numeric columns.
-    numeric_df = numeric_df.dropna()
-    if numeric_df.empty:
+
+    # Drop rows with NA in numeric slice
+    X_df = numeric_df.dropna()
+    if X_df.empty:
         raise ValueError("No complete rows found in numeric columns for PCA after dropping missing values.")
+    row_ids = X_df.index
 
-    # Perform PCA with 2 components.
-    pca_model = PCA(n_components=2)
-    pca_result = pca_model.fit_transform(numeric_df)
-    pca_df = pd.DataFrame(pca_result, columns=['PC1', 'PC2'], index=numeric_df.index)
+    # Optionally scale
+    X = X_df.values
+    if getattr(args, "scale", False):
+        X = StandardScaler(with_mean=True, with_std=True).fit_transform(X)
 
-    # Add the label column (if provided) for plotting.
-    if args.index:
-        pca_df[args.index] = df.loc[pca_df.index, args.index]
-    
-    # Add the color_by column (if provided) for plotting.
-    if args.color_by:
-        pca_df[args.color_by] = df.loc[pca_df.index, args.color_by]
+    # PCA
+    pca_model = PCA(n_components=2, random_state=None)
+    scores = pca_model.fit_transform(X)
+    pc1, pc2 = scores[:, 0], scores[:, 1]
+    evr = pca_model.explained_variance_ratio_
 
-    # Build the ggplot mapping.
-    if args.index and args.color_by:
-        mapping = aes(x='PC1', y='PC2', label=args.index, color=args.color_by)
-    elif args.index:
-        mapping = aes(x='PC1', y='PC2', label=args.index)
-    elif args.color_by:
-        mapping = aes(x='PC1', y='PC2', color=args.color_by)
+    # --- Prepare color mapping
+    color_values = None
+    color_handles = None
+    color_title = None
+    if color_col:
+        s = df.loc[row_ids, color_col].where(df.loc[row_ids, color_col].notna(), "NA").astype(str)
+        cats = list(pd.Categorical(s).categories)
+        try:
+            cmap = plt.colormaps.get_cmap('tab20')
+        except AttributeError:
+            cmap = plt.cm.get_cmap('tab20')
+        color_map = {cat: cmap(i % 20) for i, cat in enumerate(cats)}
+        color_values = s.map(color_map).values
+        color_title = color_col
+        color_handles = [Line2D([0],[0], marker='o', linestyle='',
+                                markerfacecolor=color_map[c], markeredgecolor='none',
+                                label=str(c)) for c in cats]
+
+    # --- Prepare shape mapping
+    marker_values = None
+    shape_handles = None
+    shape_title = None
+    if shape_col:
+        s = df.loc[row_ids, shape_col].where(df.loc[row_ids, shape_col].notna(), "NA").astype(str)
+        cats = list(pd.Categorical(s).categories)
+        markers = ['o', 's', '^', 'D', 'P', 'X', '*', 'v', '<', '>']
+        shape_map = {cat: markers[i % len(markers)] for i, cat in enumerate(cats)}
+        marker_values = s.map(shape_map).values
+        shape_title = shape_col
+        shape_handles = [Line2D([0],[0], marker=shape_map[c], linestyle='',
+                                markerfacecolor='gray', markeredgecolor='gray',
+                                label=str(c)) for c in cats]
+
+    # --- Layout: scatter on top, loadings panel on bottom (2 columns)
+    # height ratios: [1 - loadings_height, loadings_height]
+    lh = max(0.05, min(0.9, float(getattr(args, "loadings_height", 0.28))))
+    fig = plt.figure(figsize=(width, height))
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 2, height_ratios=[1.0 - lh, lh], width_ratios=[1, 1], hspace=0.25, wspace=0.15)
+    ax = fig.add_subplot(gs[0, :])  # scatter spans both columns
+
+    # Draw scatter (by groups if shape/color provided)
+    if color_values is None and marker_values is None:
+        ax.scatter(pc1, pc2, edgecolors='none')
     else:
-        mapping = aes(x='PC1', y='PC2')
-
-    # Generate the PCA plot using theme_matplotlib and custom axis title styling.
-    p = (ggplot(pca_df, mapping)
-         + geom_point()
-         + ggtitle("PCA Plot")
-         + theme_matplotlib()
-         + theme(axis_title=element_text(size=12))
-         )
-
-    # Patch: Remove an invalid 'backend' value if present in the rc dict.
-    if "backend" in p.rc and not isinstance(p.rc["backend"], str):
-        p.rc.pop("backend")
-
-    # Save the plot if an output filename is provided; otherwise, output the plot object.
-    if args.output:
-        p.save(filename=args.output, width=width, height=height)
-    else:
-        print(p)
-
-    return df
-
-def _handle_correlation_heatmap(df, args, input_sep, is_header_present, row_idx_col_name):
-    # Use extract_numeric_columns to obtain numeric columns.
-    numeric_df, numeric_columns = extract_numeric_columns(df)
-    if numeric_df.empty or not numeric_columns:
-        sys.stderr.write("Error: No numeric columns found for correlation heatmap.\n")
-        sys.exit(1)
-
-    # Compute the Spearman correlation matrix.
-    corr = numeric_df.corr(method="spearman")
-    
-    # Reset index and melt the correlation matrix so that the correlation values
-    # become part of the DataFrame for plotting.
-    corr_reset = corr.reset_index().melt(id_vars="index")
-    corr_reset.columns = ["Variable1", "Variable2", "Correlation"]
-
-    # Parse the figure size argument.
-    try:
-        if ',' in args.figure_size:
-            parts = args.figure_size.split(',')
+        # group by (color category, shape category) for consistent legends
+        if color_col:
+            color_cat = df.loc[row_ids, color_col].astype(str).values
         else:
-            parts = args.figure_size.split('x')
-        fig_dims = tuple(float(x.strip()) for x in parts)
-        if len(fig_dims) != 2:
-            raise ValueError
-    except Exception:
-        sys.stderr.write("Error: --figure_size must be two numbers separated by a comma or x, e.g. '8,6' or '8x6'.\n")
-        sys.exit(1)
+            color_cat = np.array(["_single"] * len(row_ids))
+        if shape_col:
+            shape_cat = df.loc[row_ids, shape_col].astype(str).values
+        else:
+            shape_cat = np.array(["_single"] * len(row_ids))
 
-    from plotnine import ggplot, aes, geom_tile, geom_text, scale_fill_gradient2, labs, theme_matplotlib
+        for cc in np.unique(color_cat):
+            for sc in np.unique(shape_cat):
+                mask = (color_cat == cc) & (shape_cat == sc)
+                if not np.any(mask):
+                    continue
+                c = color_map[cc] if color_col else None
+                m = shape_map[sc] if shape_col else 'o'
+                ax.scatter(pc1[mask], pc2[mask], c=[c] if c else None, marker=m, edgecolors='none')
 
-    # Build the correlation heatmap plot.
-    p = (ggplot(corr_reset, aes(x="Variable1", y="Variable2", fill="Correlation"))
-         + geom_tile()
-         + geom_text(aes(label=corr_reset["Correlation"].round(2)), size=8)
-         + scale_fill_gradient2(low="blue", mid="white", high="red", midpoint=0)
-         + labs(title="Spearman Correlation Heatmap", x="", y="")
-         + theme_matplotlib()
-         )
+    ax.set_xlabel(f"PC1 ({evr[0]*100:.2f}%)")
+    ax.set_ylabel(f"PC2 ({evr[1]*100:.2f}%)")
+    ax.set_title("PCA Plot")
+    ax.grid(True, alpha=0.3)
 
-    # Determine output format based on the output file extension.
-    fmt = "pdf"
-    if args.output.lower().endswith("png"):
-        fmt = "png"
+    # Optional tiny biplot arrows (off by default)
+    if not getattr(args, "no_biplot", False):
+        load = pca_model.components_.T  # (features x PCs)
+        # auto scale arrows to ~1/3 of scatter extent
+        score_extent = np.max(np.sqrt(pc1**2 + pc2**2)) or 1.0
+        load_norm = np.max(np.sqrt(np.sum(load[:, :2]**2, axis=1))) or 1.0
+        scale = 0.33 * score_extent / load_norm
+        for i, var in enumerate(numeric_columns):
+            vx, vy = (load[i, 0] * scale, load[i, 1] * scale)
+            ax.arrow(0, 0, vx, vy, color='red', alpha=0.35, width=0.0,
+                     length_includes_head=True, head_width=0.02*score_extent)
 
-    try:
-        p.save(filename=args.output, width=fig_dims[0], height=fig_dims[1], format=fmt)
-    except Exception as e:
-        sys.stderr.write(f"Error saving correlation heatmap: {e}\n")
-        sys.exit(1)
+    # keep track of legends so savefig knows to include them
+    legend_artists = []
+
+    # ---- Legends (outside or inside)
+    def _place_legends_outside(ax, color_handles, shape_handles, color_title, shape_title):
+        blocks = [b for b in [(color_handles, color_title), (shape_handles, shape_title)] if b[0]]
+        if not blocks:
+            return
+        # room on the right for one vs two stacked legends
+        fig.subplots_adjust(right=(0.80 if len(blocks) == 1 else 0.70))
+        y = 1.00
+        for handles, title in blocks:
+            leg = ax.legend(handles=handles, title=title,
+                            loc="upper left", bbox_to_anchor=(1.01, y),
+                            frameon=True, fontsize="small", title_fontsize="small")
+            ax.add_artist(leg)
+            legend_artists.append(leg)     # <-- register for savefig
+            y -= 0.32
+
+    if getattr(args, "legend_outside", False):
+        _place_legends_outside(ax, color_handles, shape_handles, color_title, shape_title)
+    else:
+        if color_handles:
+            leg1 = ax.legend(handles=color_handles, title=color_title,
+                             loc="best", frameon=True, fontsize="small", title_fontsize="small")
+            ax.add_artist(leg1)
+        if shape_handles:
+            leg2 = ax.legend(handles=shape_handles, title=shape_title,
+                             loc="upper left", frameon=True, fontsize="small", title_fontsize="small")
+            ax.add_artist(leg2)
+
+    # Labels (avoid clutter)
+    if label_col:
+        labels = df.loc[row_ids, label_col].astype(str)
+        if len(labels) <= 60:
+            for x, y, txt in zip(pc1, pc2, labels):
+                ax.annotate(txt, (x, y), fontsize=6, xytext=(2, 2), textcoords='offset points')
+
+    # --- Loadings panel (PC1 & PC2)
+    # Select top features by max(|loading_pc1|, |loading_pc2|)
+    load = pca_model.components_.T  # features x PCs
+    pc1_load, pc2_load = load[:, 0], load[:, 1]
+    mag = np.maximum(np.abs(pc1_load), np.abs(pc2_load))
+    n = int(getattr(args, "top_loadings", 10) or 10)
+    keep_idx = np.argsort(-mag)[:max(1, n)]
+    feat = [numeric_columns[i] for i in keep_idx]
+    pc1_k = pc1_load[keep_idx]
+    pc2_k = pc2_load[keep_idx]
+
+    if getattr(args, "loadings_style", "dots") == "heatmap":
+        # simple 2-column heatmap fallback
+        from matplotlib.colors import TwoSlopeNorm
+        ax_hm = fig.add_subplot(gs[1, :])
+        mat = np.vstack([pc1_k, pc2_k]).T
+        vmax = np.max(np.abs(mat)) or 1.0
+        im = ax_hm.imshow(mat, aspect='auto', cmap='bwr', norm=TwoSlopeNorm(0, -vmax, vmax))
+        ax_hm.set_yticks(range(len(feat)))
+        ax_hm.set_yticklabels(feat, fontsize=8)
+        ax_hm.set_xticks([0,1])
+        ax_hm.set_xticklabels(["PC1","PC2"], fontsize=9)
+        ax_hm.set_title("Top loadings")
+        cb = fig.colorbar(im, ax=ax_hm, fraction=0.025, pad=0.02)
+        cb.ax.tick_params(labelsize=8)
+    else:
+        # VizDimLoadings-style dot plots: left=PC1, right=PC2 (shared y)
+        ax_l = fig.add_subplot(gs[1, 0])
+        ax_r = fig.add_subplot(gs[1, 1], sharey=ax_l)
+
+        # order features from strongest to weakest for nice stacking
+        order = np.argsort(-mag[keep_idx])
+        feat = [feat[i] for i in order]
+        pc1_k = pc1_k[order]
+        pc2_k = pc2_k[order]
+
+        y = np.arange(len(feat))
+        maxabs = max(np.max(np.abs(pc1_k)), np.max(np.abs(pc2_k)), 0.1)
+        lim = 1.05 * maxabs
+
+        for axd, vals, title in [(ax_l, pc1_k, "PC1 loadings"), (ax_r, pc2_k, "PC2 loadings")]:
+            axd.axvline(0, lw=0.8, ls='--', alpha=0.6)
+            axd.scatter(vals, y, s=20)
+            axd.set_xlim(-lim, lim)
+            axd.set_yticks(y)
+            axd.set_yticklabels(feat, fontsize=7)
+            axd.set_xlabel(title, fontsize=9)
+            axd.grid(True, axis='x', alpha=0.2)
+        # Only show y tick labels on the left plot
+        plt.setp(ax_r.get_yticklabels(), visible=False)
+
+    # Save
+    ext = os.path.splitext(args.output)[1].lower().lstrip(".") or "pdf"
+    fig.savefig(args.output, format=ext, dpi=300,
+                bbox_inches="tight",
+                bbox_extra_artists=legend_artists)   # <-- important
+    plt.close(fig)
     sys.exit(0)
 
+def _handle_isolation_forest(df, args, input_sep, is_header_present, row_idx_col):
+    """
+    Detect outlier samples via Isolation Forest and annotate the table.
 
+    Adds columns:
+      - iforest_score       (float; higher = more anomalous)
+      - iforest_is_outlier  (bool)
+      - iforest_topk        (semicolon list of top-K features by |z| for that sample)
+    """
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import IsolationForest
+
+    # Resolve optional index col (not required)
+    label_col = None
+    if getattr(args, "index", None):
+        idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
+        label_col = df.columns[idx]
+
+    # Exclusions
+    exclude = []
+    if label_col:
+        exclude.append(label_col)
+    if getattr(args, "exclude", None):
+        exclude += [c.strip() for c in args.exclude.split(",") if c.strip()]
+
+    # Numeric slice
+    numeric_df, numeric_columns = _helper_extract_numeric_columns(df, exclude_cols=exclude)
+    if not numeric_columns:
+        raise ValueError("No numeric columns found for Isolation Forest.")
+    # Keep only complete rows for modeling
+    X_df = numeric_df.dropna()
+    if X_df.empty:
+        raise ValueError("No complete rows in numeric columns for Isolation Forest.")
+
+    # Optional scaling: z-score with protection for constant columns (std==0)
+    if getattr(args, "no_scale", False):
+        Z = X_df.values
+        Z_for_topk = (X_df - X_df.mean()).div(X_df.std(ddof=0).replace(0, np.nan)).fillna(0.0)
+    else:
+        mean = X_df.mean()
+        std = X_df.std(ddof=0).replace(0, np.nan)
+        Z_for_topk = (X_df - mean).div(std).fillna(0.0)
+        Z = Z_for_topk.values  # model on scaled features
+
+    # Model params
+    contamination = getattr(args, "contamination", "auto") or "auto"
+    if contamination != "auto":
+        try:
+            contamination = float(contamination)
+        except ValueError:
+            raise ValueError("--contamination must be a float or 'auto'.")
+    n_estimators = int(getattr(args, "n_estimators", 200) or 200)
+    random_state = int(getattr(args, "random_state", 42) or 42)
+    top_k = int(getattr(args, "top_k", 3) or 3)
+
+    # Fit
+    model = IsolationForest(
+        n_estimators=n_estimators,
+        contamination=contamination,
+        random_state=random_state
+    )
+    model.fit(Z)
+
+    # Scores/preds for modeled rows
+    raw = model.score_samples(Z)          # higher = less abnormal
+    score = -raw                          # higher = more abnormal
+    pred = model.predict(Z)               # 1 normal, -1 outlier
+    is_out = (pred == -1)
+
+    # Attach results to a full-length Series aligned to original df
+    score_s = pd.Series(index=df.index, dtype=float)
+    score_s.loc[X_df.index] = score
+    flag_s = pd.Series(False, index=df.index)
+    flag_s.loc[X_df.index] = is_out
+
+    # Top-K features by |z|
+    topk_s = pd.Series(index=df.index, dtype=object)
+    if top_k > 0:
+        for ridx in X_df.index:
+            zrow = Z_for_topk.loc[ridx].abs().sort_values(ascending=False)
+            feats = [f"{c}:{zrow[c]:.2f}" for c in zrow.index[:top_k]]
+            topk_s.loc[ridx] = ";".join(feats)
+
+    # Append columns
+    out = df.copy()
+    out.insert(len(out.columns), "iforest_score", score_s)
+    out.insert(len(out.columns), "iforest_is_outlier", flag_s)
+    out.insert(len(out.columns), "iforest_topk", topk_s)
+
+    # Optionally keep only outliers
+    if getattr(args, "only_outliers", False):
+        out = out[out["iforest_is_outlier"] == True]
+
+
+    # Optionally plot bar charts per outlier
+    # Optionally plot bar charts
+    if getattr(args, "plot_bars", False):
+        import math
+        import matplotlib.pyplot as plt
+
+        # Helper: parse fig size
+        try:
+            bw, bh = map(float, str(getattr(args, "bars_figsize", "12,8")).split(','))
+        except Exception:
+            bw, bh = 12.0, 8.0
+
+        outliers_idx = list(X_df.index[is_out])
+        if len(outliers_idx) == 0:
+            sys.stderr.write("NOTE: No outliers detected; no bar plots generated.\n")
+        else:
+            mode = getattr(args, "bars_mode", "by_feature")
+
+            if mode == "by_sample":
+                # --- existing behavior: one subplot per outlier *sample* (top-K signed z)
+                max_panels = max(1, int(getattr(args, "bars_max_outliers", 12)))
+                panel_ids = outliers_idx[:max_panels]
+
+                n = len(panel_ids)
+                ncols = 3 if n >= 3 else n
+                nrows = int(math.ceil(n / ncols))
+                fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(bw, bh), squeeze=False)
+                axes = axes.ravel()
+
+                # build data & global xlim
+                import numpy as np
+                max_abs = 0.0
+                per_out = {}
+                for ridx in panel_ids:
+                    zrow = Z_for_topk.loc[ridx]
+                    zabs = zrow.abs().sort_values(ascending=False)
+                    feats = list(zabs.index[:top_k])
+                    vals = zrow[feats].values
+                    per_out[ridx] = (feats, vals)
+                    if len(vals):
+                        max_abs = max(max_abs, float(np.max(np.abs(vals))))
+                xlim = 1.2 * (max_abs if max_abs > 0 else 1.0)
+
+                for ax, ridx in zip(axes, panel_ids):
+                    feats, vals = per_out[ridx]
+                    ax.axvline(0, lw=0.8, ls='--', alpha=0.6)
+                    ax.barh(range(len(feats)), vals, align='center')
+                    ax.set_yticks(range(len(feats)))
+                    ax.set_yticklabels(feats, fontsize=7)
+                    label = str(df.loc[ridx, label_col]) if label_col else str(ridx)
+                    score_str = f"{score_s.loc[ridx]:.3f}" if pd.notna(score_s.loc[ridx]) else "NA"
+                    ax.set_title(f"{label} (score {score_str})", fontsize=9)
+                    ax.set_xlim(-xlim, xlim)
+                    ax.grid(True, axis='x', alpha=0.2)
+
+                for ax in axes[len(panel_ids):]:
+                    ax.axis('off')
+
+            else:
+                # --- NEW: one subplot per outlier *feature* across all samples
+                # union of top-K features from each outlier sample, ordered by max |z| among outliers
+                import numpy as np
+
+                feat_scores = {}
+                for ridx in outliers_idx:
+                    zrow = Z_for_topk.loc[ridx].abs().sort_values(ascending=False)
+                    for f in zrow.index[:top_k]:
+                        feat_scores[f] = max(feat_scores.get(f, 0.0), float(abs(Z_for_topk.loc[ridx, f])))
+
+                if not feat_scores:
+                    sys.stderr.write("NOTE: No top features found among outliers; no feature panels.\n")
+                else:
+                    ordered_features = [f for f,_ in sorted(feat_scores.items(), key=lambda kv: -kv[1])]
+                    max_panels = max(1, int(getattr(args, "bars_max_outliers", 12)))
+                    features_to_plot = ordered_features[:max_panels]
+
+                    n = len(features_to_plot)
+                    ncols = 3 if n >= 3 else n
+                    nrows = int(math.ceil(n / ncols))
+                    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(bw, bh), squeeze=False)
+                    axes = axes.ravel()
+
+                    # colors
+                    idx_all = list(X_df.index)  # modeled rows
+                    is_out_series = pd.Series(False, index=idx_all)
+                    is_out_series.loc[outliers_idx] = True
+                    col_out = "#d62728"  # red
+                    col_in  = "#bdbdbd"  # gray
+
+                    # x labels density
+                    show_xlabels = len(idx_all) <= 25
+
+                    # consistent y-limits across panels
+                    max_abs = 0.0
+                    for f in features_to_plot:
+                        vals = Z_for_topk[f].loc[idx_all].values  # signed z
+                        if len(vals):
+                            max_abs = max(max_abs, float(np.max(np.abs(vals))))
+                    ylim = 1.2 * (max_abs if max_abs > 0 else 1.0)
+
+                    for ax, f in zip(axes, features_to_plot):
+                        zvals = Z_for_topk[f].loc[idx_all]  # signed z across samples
+                        colors = [col_out if is_out_series.loc[i] else col_in for i in idx_all]
+                        ax.axhline(0, lw=0.8, ls='--', alpha=0.6)
+                        ax.bar(range(len(idx_all)), zvals.values, color=colors)
+                        ax.set_title(f, fontsize=9)
+                        ax.set_ylim(-ylim, ylim)
+                        if show_xlabels:
+                            xt = [str(df.loc[i, label_col]) if label_col else str(i) for i in idx_all]
+                            ax.set_xticks(range(len(idx_all)))
+                            ax.set_xticklabels(xt, rotation=60, ha='right', fontsize=7)
+                        else:
+                            ax.set_xticks([])
+                        ax.grid(True, axis='y', alpha=0.2)
+
+                    for ax in axes[len(features_to_plot):]:
+                        ax.axis('off')
+
+                    # simple legend
+                    from matplotlib.lines import Line2D
+                    handles = [Line2D([0],[0], color=col_out, lw=6, label="Outlier samples"),
+                               Line2D([0],[0], color=col_in,  lw=6, label="Non-outliers")]
+                    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, fontsize='small')
+
+            out_path = getattr(args, "bars_output", None) or "iforest_bars.pdf"
+            ext = os.path.splitext(out_path)[1].lower().lstrip(".") or "pdf"
+            fig.tight_layout()
+            fig.savefig(out_path, format=ext, bbox_inches='tight', dpi=300)
+            plt.close(fig)
+    return out
+
+#--
+
+def _handle_heatmap(df, args, input_sep, is_header_present, row_idx_col_name):
+    """
+    Heatmap of samples (rows) x features (columns) with optional dendrograms and sample annotations.
+    If --corr is given, a feature-feature Spearman correlation heatmap is shown instead.
+    """
+    import sys, os
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    # Figure size
+    try:
+        if ',' in args.figure_size:
+            w, h = map(float, args.figure_size.split(','))
+        elif 'x' in args.figure_size.lower():
+            w, h = map(float, args.figure_size.lower().split('x'))
+        else:
+            w = h = float(args.figure_size)
+    except Exception:
+        sys.stderr.write("Error: --figure_size must be like '8,6' or '8x6'.\n")
+        sys.exit(1)
+
+    # --index is required
+    if not getattr(args, "index", None):
+        sys.stderr.write("Error: --index is required for 'heatmap'.\n")
+        sys.exit(1)
+    idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
+    label_col = df.columns[idx]
+
+    # Ensure the dataframe index is the sample label so row ticklabels are sample names
+    df = df.copy()
+    df[label_col] = df[label_col].astype(str)
+    df.set_index(label_col, inplace=True, drop=False)
+
+    # Annotations (optional)
+    row_ann_cols = []
+    if getattr(args, "row_annotations", None):
+        row_ann_cols = [c.strip() for c in args.row_annotations.split(',') if c.strip()]
+
+    corr_mode = bool(getattr(args, "corr", False))
+
+    # numeric slice (exclude label + annotations)
+    exclude = [label_col] + row_ann_cols
+    numeric_df, numeric_columns = _helper_extract_numeric_columns(df, exclude_cols=exclude)
+
+    if corr_mode:
+        if not numeric_columns:
+            raise ValueError("No numeric columns found for correlation heatmap.")
+        data_to_plot = _corr_from_df(numeric_df)                 # feature-feature corr
+        row_colors_df = None                                     # not used in corr mode
+        center = 0.0
+        cmap = getattr(args, "cmap", None) or "bwr_r"            # red=neg, blue=pos
+    else:
+        if not numeric_columns:
+            raise ValueError("No numeric columns found for heatmap.")
+        M = numeric_df.copy()
+
+        # z-score per column (optional)
+        if getattr(args, "zscore", False):
+            mu = M.mean(axis=0)
+            sigma = M.std(axis=0, ddof=0).replace(0, np.nan)
+            M = (M - mu).div(sigma)
+            center = 0.0
+            cmap = getattr(args, "cmap", None) or "bwr_r"        # red=neg, blue=pos
+        else:
+            center = None
+            cmap = getattr(args, "cmap", None) or "viridis"
+
+        # drop all-NA (constant) features after scaling
+        all_na_cols = [c for c in M.columns if M[c].isna().all()]
+        if all_na_cols:
+            sys.stderr.write("Warning: Dropping constant/non-informative feature(s): "
+                             + ", ".join(all_na_cols) + "\n")
+            M = M.drop(columns=all_na_cols)
+            numeric_columns = [c for c in numeric_columns if c not in all_na_cols]
+
+        # build row annotation color matrix (aligned to M)
+        row_colors_df = None
+        if row_ann_cols:
+            ann = df.loc[M.index, row_ann_cols]
+            row_colors_df = pd.DataFrame(index=ann.index)
+            for col in row_ann_cols:
+                s = ann[col].astype('string')  # keeps <NA>
+                cats = pd.Categorical(s).categories
+                pal = sns.color_palette(None, n_colors=max(3, len(cats)))
+                color_map = {cat: pal[i % len(pal)] for i, cat in enumerate(cats)}
+                # Map with default tuple (avoid Series.fillna(tuple) error)
+                row_colors_df[col] = s.map(lambda k: color_map.get(k, (0.8, 0.8, 0.8)))
+
+        data_to_plot = M
+
+    if data_to_plot.empty:
+        sys.stderr.write("Error: Nothing to plot (empty matrix).\n")
+        sys.exit(1)
+
+    # clustering options
+    cluster_rows = not getattr(args, "no_row_dendro", False)
+    cluster_cols = not getattr(args, "no_col_dendro", False)
+    if getattr(args, "no_cluster", False):
+        cluster_rows = False
+        cluster_cols = False
+
+    linkage_method = getattr(args, "linkage", "average")
+    distance_kind = getattr(args, "distance", "1-corr")  # '1-corr' or 'euclidean'
+    if linkage_method == "ward" and distance_kind != "euclidean":
+        sys.stderr.write("Warning: 'ward' linkage requires Euclidean distances; switching distance=euclidean.\n")
+        distance_kind = "euclidean"
+
+    # Linkages (robust, all finite)
+    row_linkage = col_linkage = None
+    if cluster_cols:
+        if distance_kind == "1-corr":
+            cmat = data_to_plot if corr_mode else _corr_from_df(data_to_plot)
+            col_linkage = _link_from_corr(cmat, method=linkage_method)
+        else:
+            Z = data_to_plot.fillna(0.0)
+            col_linkage = linkage(np.nan_to_num(pdist(Z.T, 'euclidean')), method=linkage_method)
+
+    if cluster_rows:
+        if distance_kind == "1-corr":
+            cmat = data_to_plot if corr_mode else _corr_from_df(data_to_plot.T)
+            row_linkage = _link_from_corr(cmat, method=linkage_method)
+        else:
+            Z = data_to_plot.fillna(0.0)
+            row_linkage = linkage(np.nan_to_num(pdist(Z, 'euclidean')), method=linkage_method)
+
+    # Colorbar placement and right padding
+    cbar_pos = (.02, .8, .04, .18) if getattr(args, "cbar_left", False) else None
+    right_pad = float(getattr(args, "right_pad", 0.84))
+
+    # Decide whether to draw tick labels (avoid slow text drawing)
+    max_labels = int(getattr(args, "max_labels", 200))
+    xticks_on = data_to_plot.shape[1] <= max_labels
+    yticks_on = data_to_plot.shape[0] <= max_labels
+
+    plot_df = data_to_plot.copy()
+    plot_mask = plot_df.isna()
+    plot_df = plot_df.fillna(0.0)
+
+    g = sns.clustermap(
+        plot_df,
+        row_linkage=row_linkage,
+        col_linkage=col_linkage,
+        row_colors=row_colors_df if (row_colors_df is not None and not corr_mode) else None,
+        cmap=cmap,
+        center=center,
+        xticklabels=xticks_on,
+        yticklabels=yticks_on,
+        cbar_pos=cbar_pos,
+        figsize=(w, h),
+        linewidths=getattr(args, "grid_linewidth", 0.0),
+    )
+
+    ax = g.ax_heatmap
+    ax.set_xlabel(""); ax.set_ylabel("")
+    if xticks_on:
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90, ha='center',
+                           fontsize=getattr(args, "xtick_fontsize", 8))
+    if yticks_on:
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=getattr(args, "ytick_fontsize", 7))
+
+    # annotation legends on the right
+    if row_ann_cols and not corr_mode and getattr(args, "annot_legend", True):
+        legend_ax = g.fig.add_axes([right_pad, 0.15, 0.15, 0.7])  # x,y,w,h
+        legend_ax.axis("off")
+        y0, dy = 0.95, 0.08
+        # reorder annotations to plotting order
+        ordered_rows = g.dendrogram_row.reordered_ind if cluster_rows else list(range(plot_df.shape[0]))
+        ann_df = df.loc[plot_df.index[ordered_rows], row_ann_cols]
+
+        for j, col in enumerate(row_ann_cols):
+            s = ann_df[col].astype('string')
+            cats = pd.Categorical(s).categories.tolist()  # excludes NA
+            pal = sns.color_palette(None, n_colors=max(3, len(cats)))
+            cm = {cat: pal[i % len(pal)] for i, cat in enumerate(cats)}
+            patches = [Patch(facecolor=cm[c], edgecolor='none', label=str(c)) for c in cats]
+            # If we had any NA, show it explicitly
+            if s.isna().any():
+                patches.append(Patch(facecolor=(0.8,0.8,0.8), edgecolor='none', label="NA"))
+            legend_ax.legend(handles=patches, title=col, loc='upper left',
+                             bbox_to_anchor=(0.0, y0 - j*dy), frameon=False,
+                             fontsize=8, title_fontsize=9)
+
+    # write values on tiles (optional)
+    if getattr(args, "show_values", False):
+        rows = g.dendrogram_row.reordered_ind if cluster_rows else slice(None)
+        cols = g.dendrogram_col.reordered_ind if cluster_cols else slice(None)
+        data_reordered = plot_df.iloc[rows, cols]
+        mask_reordered = plot_mask.iloc[rows, cols]
+        ny, nx = data_reordered.shape
+        for yi in range(ny):
+            for xi in range(nx):
+                if mask_reordered.iat[yi, xi]:
+                    continue
+                val = data_reordered.iat[yi, xi]
+                ax.text(xi + 0.5, yi + 0.5, f"{val:{getattr(args, 'values_fmt', '.2f')}}",
+                        ha='center', va='center', fontsize=getattr(args, "values_fontsize", 6))
+
+    g.fig.subplots_adjust(right=right_pad)
+    ext = os.path.splitext(args.output)[1].lower().lstrip(".") or "pdf"
+    g.fig.savefig(args.output, format=ext, bbox_inches='tight', dpi=300)
+    plt.close(g.fig)
+    sys.exit(0)
+
+#--
 
 def _handle_filter_columns(df, args, input_sep, is_header_present, row_idx_col_name):
     index_col_name = None
@@ -801,7 +1520,7 @@ def _handle_filter_columns(df, args, input_sep, is_header_present, row_idx_col_n
         filtered_df = filtered_df.set_index(index_col_name, drop=False)
     return filtered_df
 
-def _handle_aggr(df, args, input_sep, is_header_present, row_idx_col_name):
+def _handle_aggregate(df, args, input_sep, is_header_present, row_idx_col_name):
     import sys
     import pandas as pd
     from scipy.stats import entropy as calculate_entropy
@@ -1078,9 +1797,11 @@ def _handle_join(df, args, input_sep, is_header_present, row_idx_col_name):
     new_header = args.new_header
     if is_header_present:
         new_header = get_unique_header(new_header, df)
+    # compute how many dropped columns lie before the target position
+    before_target = sum(1 for i in indices if i < target)
     drop_names = [df.columns[i] for i in sorted(indices, reverse=True)]
     df = df.drop(columns=drop_names)
-    pos = min(target, df.shape[1])
+    pos = min(max(target - before_target, 0), df.shape[1])
     df.insert(pos, new_header, joined.reset_index(drop=True))
     _print_verbose(args, f"Inserted joined column '{new_header}' at index {pos}.")
     return df
@@ -1120,7 +1841,7 @@ def _handle_tr(df, args, input_sep, is_header_present, row_idx_col_name):
         except re.error as e:
             raise ValueError(f"Error: Invalid regex '{from_val}': {e}")
     else:
-        raise ValueError("Error: For tr operation, specify either a dict file (--dict_file) or both --from_val and --to_val.")
+        raise ValueError("Error: For replace operation, specify either a dict file (--dict_file) or both --from_val and --to_val.")
     if args.in_place:
         df.iloc[:, col] = translated
     else:
@@ -1249,7 +1970,7 @@ def _handle_value_counts(df, args, input_sep, is_header_present, row_idx_col_nam
         raise ValueError("Error: No columns specified for value_counts.")
     for i in indices:
         col = df.columns[i]
-        counter.update(df[col].astype(str))
+        counter.update(df[col].dropna().astype(str))
     sorted_counts = sorted(counter.items(), key=lambda x: x[1], reverse=True)
     summary = pd.DataFrame(sorted_counts[:args.top_n], columns=['Value', 'Count'])
     sys.stdout.write(f"--- Top {args.top_n} Values ---\n")
@@ -1277,7 +1998,7 @@ def _handle_strip(df, args, input_sep, is_header_present, row_idx_col_name):
     return df
 
 def _handle_numeric_map(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    mapping, next_id = ({} , 1) if state is None else state
+    mapping, next_id = ({}, 1) if state is None else state
     col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
     original = df.columns[col]
     _print_verbose(args, f"Mapping unique values in '{original}' to numeric identifiers.")
@@ -1315,7 +2036,6 @@ def _handle_regex_capture(df, args, input_sep, is_header_present, row_idx_col_na
 def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
     import sys
     import pandas as pd
-    from pandas.api.types import is_numeric_dtype
 
     _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
     pd.set_option('display.max_rows', args.max_rows)
@@ -1563,7 +2283,7 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
     elif args.geom == "tile":
         p += geom_tile()
     elif args.geom == "pie":
-        sys.stderr.write("Error: For pie charts, please use the 'matplotlib' subcommand instead.\n")
+        sys.stderr.write("Error: For pie charts, please use the 'plot_mpl' subcommand instead.\n")
         sys.exit(1)
     else:
         sys.stderr.write(f"Error: Unsupported geom '{args.geom}' for ggplot.\n")
@@ -1608,10 +2328,12 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
     p += theme_nizar()
     p += guides(fill=guide_legend(ncol=1))
     
+    # choose format from extension
+    fmt = "pdf" if args.output.lower().endswith(".pdf") else ("png" if args.output.lower().endswith(".png") else None)
     try:
-        p.save(filename=args.output, width=fig_dims[0], height=fig_dims[1], format="pdf")
+        p.save(filename=args.output, width=fig_dims[0], height=fig_dims[1], format=fmt)
     except Exception as e:
-        sys.stderr.write(f"Error saving PDF: {e}\n")
+        sys.stderr.write(f"Error saving figure: {e}\n")
         sys.exit(1)
     sys.exit(0)
 
@@ -1663,7 +2385,8 @@ def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name)
     
     if args.title:
         plt.title(args.title)
-    fig.savefig(args.output, format="pdf", bbox_inches='tight')
+    ext = os.path.splitext(args.output)[1].lower().lstrip(".") or "pdf"
+    fig.savefig(args.output, format=ext, bbox_inches='tight')
     sys.exit(0)
 
 def _handle_melt(df, args, input_sep, is_header_present, row_idx_col_name):
@@ -1693,7 +2416,7 @@ def _handle_add_metadata(df, args, input_sep, is_header_present, row_idx_col_nam
     import codecs
 
     if args.lowmem:
-        sys.stderr.write("Error: 'add_metadata' operation does not support low-memory mode (--lowmem).\n")
+        sys.stderr.write("Error: 'join_meta' operation does not support low-memory mode (--lowmem).\n")
         sys.exit(1)
 
     meta_sep_raw = getattr(args, "meta_sep", None) or input_sep
@@ -1742,8 +2465,8 @@ def _handle_add_metadata(df, args, input_sep, is_header_present, row_idx_col_nam
 # --------------------------
 # Custom Functions for Plotting
 # --------------------------
-import plotnine as p9
 def theme_nizar():
+    import plotnine as p9
     return p9.theme(
         panel_background=p9.element_rect(fill="white"),
         panel_grid_major=p9.element_line(linetype='dotted', color='grey', size=0.2),
@@ -1760,7 +2483,8 @@ def theme_nizar():
 
 def venn_diagram(df, colnames):
     num_cols = len(colnames)
-    df_binary = (df[colnames].astype(float) > 0).astype(int)
+    df_num = df[colnames].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    df_binary = (df_num > 0).astype(int)
     segment_data = []
     segment_counts = {}
     col_masks = [df_binary[col].astype(bool) for col in colnames]
@@ -1846,56 +2570,61 @@ def venn_diagram(df, colnames):
 # --------------------------
 OPERATION_HANDLERS = {
     "move": _handle_move,
-    "col_insert": _handle_col_insert,
-    "col_drop": _handle_col_drop,
-    "grep": _handle_grep,
-    "split": _handle_split,
-    "join": _handle_join,
-    "tr": _handle_tr,
+    "add_col": _handle_col_insert,
+    "drop_col": _handle_col_drop,
+    "filter": _handle_grep,
+    "split_col": _handle_split,
+    "join_col": _handle_join,
+    "replace": _handle_tr,
     "sort": _handle_sort,
     "cleanup_header": _handle_cleanup_header,
     "cleanup_values": _handle_cleanup_values,
-    "prefix_add": _handle_prefix_add,
-    "value_counts": _handle_value_counts,
+    "prefix": _handle_prefix_add,
+    "stats": _handle_value_counts,
     "strip": _handle_strip,
-    "numeric_map": _handle_numeric_map,
-    "regex_capture": _handle_regex_capture,
+    "factorize": _handle_numeric_map,
+    "extract": _handle_regex_capture,
     "view": _handle_view,
-    "cut": _handle_cut,
-    "viewheader": _handle_viewheader,
+    "select": _handle_cut,
+    "headers": _handle_viewheader,
     "row_insert": _handle_row_insert,
     "row_drop": _handle_row_drop,
     "transpose": _handle_transpose,
-    "ggplot": _handle_ggplot,
-    "matplotlib": _handle_matplotlib,
+    "plot": _handle_ggplot,
+    "plot_mpl": _handle_matplotlib,
     "melt": _handle_melt,
-    "unmelt": _handle_unmelt,
-    "aggr": _handle_aggr,
-    "add_metadata": _handle_add_metadata,
-    "filter_columns": _handle_filter_columns,
+    "pivot": _handle_unmelt,
+    "aggregate": _handle_aggregate,
+    "join_meta": _handle_add_metadata,
+    "filter_cols": _handle_filter_columns,
     "pca": _handle_pca,
-    "correlation_heatmap": _handle_correlation_heatmap,
-    "unpack_column": _handle_unpack_column  # New operation added here.
+    "heatmap": _handle_heatmap,
+    "kv_unpack": _handle_unpack_column,
+    "detect_outliers": _handle_isolation_forest,
 }
+
 # --------------------------
 # Input/Output Functions
 # --------------------------
 def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
     raw_first_line = []
     input_stream = args.file
-    comment_char = None
-    if args.ignore_lines:
-        if args.ignore_lines.startswith('^'):
-            comment_char = args.ignore_lines[1:]
-        else:
-            comment_char = args.ignore_lines
+    # Compile regex for lines to ignore
+    comment_pattern = re.compile(args.ignore_lines) if args.ignore_lines else None
+
+    def _line_iter(fh):
+        for line in fh:
+            if comment_pattern and comment_pattern.match(line):
+                continue
+            yield line
+
+    terminal_allow_empty = {"headers", "view", "stats", "extract"}
     if use_chunked:
         try:
-            reader = pd.read_csv(input_stream, sep=input_sep, header=header_param, dtype=str,
-                                 comment=comment_char,
+            reader = pd.read_csv(_line_iter(input_stream), sep=input_sep, header=header_param, dtype=str,
                                  chunksize=CHUNK_SIZE, iterator=True)
             first_chunk = next(reader)
-            if first_chunk.empty and args.operation not in ["viewheader", "view", "value_counts", "regex_capture"]:
+            if first_chunk.empty and args.operation not in terminal_allow_empty:
                 sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires non-empty data.\n")
                 sys.exit(1)
             if not is_header_present:
@@ -1913,8 +2642,9 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
             sys.exit(1)
     else:
         try:
-            content = input_stream.read()
-            if not content.strip() and args.operation not in ["viewheader", "view", "value_counts"]:
+            # Filter lines according to regex and join
+            content = "".join(l for l in input_stream if not (comment_pattern and comment_pattern.match(l)))
+            if not content.strip() and args.operation not in terminal_allow_empty:
                 sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires data.\n")
                 sys.exit(1)
             if not content.strip():
@@ -1925,7 +2655,7 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
                 first_line = csv_io.readline().strip()
                 raw_first_line = first_line.split(input_sep) if first_line else []
                 csv_io.seek(pos)
-            df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str, comment=comment_char)
+            df = pd.read_csv(csv_io, sep=input_sep, header=header_param, dtype=str)
             return df, raw_first_line
         except pd.errors.EmptyDataError:
             df = pd.DataFrame(columns=[])
@@ -1937,21 +2667,20 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
 
 def _write_output_data(data, args, input_sep, is_header_present, header_printed):
     try:
-        if isinstance(data, pd.DataFrame):
-            data = _format_numeric_columns(data)
-        if args.operation in ["view", "viewheader", "value_counts"]:
+        if args.operation in ["view", "headers", "stats"]:
             return header_printed
         if isinstance(data, pd.DataFrame):
             data.to_csv(
                 sys.stdout,
                 sep=input_sep,
                 index=False,
-                header=is_header_present,
+                header=(is_header_present and not header_printed),
                 encoding='utf-8',
                 quoting=csv.QUOTE_NONE,
                 escapechar='\\'
             )
             return True
+        # Fallback for other iterable CSV outputs (rare)
         if not header_printed and is_header_present:
             data.to_csv(
                 sys.stdout,
@@ -1987,9 +2716,13 @@ def main():
     if not args.operation:
         parser.print_help()
         sys.exit(0)
+
+    if args.lowmem and args.operation == "detect_outliers":
+        sys.stderr.write("Error: Isolation Forest is not supported in --lowmem mode.\n")
+        sys.exit(1)
     
-    if args.operation == "add_metadata" and args.lowmem:
-        sys.stderr.write("Error: 'add_metadata' operation does not support low-memory mode (--lowmem).\n")
+    if args.operation == "join_meta" and args.lowmem:
+        sys.stderr.write("Error: 'join_meta' operation does not support low-memory mode (--lowmem).\n")
         sys.exit(1)
     
     if args.noheader:
@@ -2005,8 +2738,11 @@ def main():
         sys.stderr.write("Error: 'sort' operation cannot be performed in low-memory mode (--lowmem).\n")
         sys.exit(1)
     
-    lowmem_ops = ["value_counts", "numeric_map", "grep", "tr", "strip", "prefix_add", "cleanup_values", "regex_capture"]
-    use_chunked = args.lowmem and args.operation in lowmem_ops
+    use_chunked = args.lowmem and args.operation in LOWMEM_OPS
+
+    # allow user-tunable chunksize
+    global CHUNK_SIZE
+    CHUNK_SIZE = args.chunksize
 
     lowmem_row = False
     if args.operation in ["row_insert", "row_drop"]:
@@ -2077,12 +2813,12 @@ def main():
         for chunk in df_or_chunks:
             if not is_header_present:
                 chunk.columns = pd.Index(range(chunk.shape[1]))
-            if args.operation in ["grep", "numeric_map"]:
+            if args.operation in ["filter", "factorize"]:
                 processed, op_state[args.operation] = handler(
                     chunk, args, input_sep, is_header_present, row_idx_col,
                     state=op_state.get(args.operation, {})
                 )
-            elif args.operation in ["view", "regex_capture", "viewheader"]:
+            elif args.operation in ["view", "extract", "headers"]:
                 processed = handler(
                     chunk, args, input_sep, is_header_present, row_idx_col, raw_first_line
                 )
@@ -2090,31 +2826,30 @@ def main():
                 processed = handler(
                     chunk, args, input_sep, is_header_present, row_idx_col
                 )
-            if row_idx_col and row_idx_col in processed.columns:
+            if row_idx_col and isinstance(processed, pd.DataFrame) and row_idx_col in processed.columns:
                 cols_order = [row_idx_col] + [col for col in processed.columns if col != row_idx_col]
                 processed = processed[cols_order]
             header_printed = _write_output_data(processed, args, input_sep, is_header_present, header_printed)
-        if args.operation == "grep" and args.word_file and args.list_missing_words:
+        if args.operation == "filter" and getattr(args, "word_file", None) and getattr(args, "list_missing_words", False):
             with open(args.word_file, 'r', encoding='utf-8') as f:
                 word_list = [line.strip() for line in f if line.strip()]
-            matched = op_state.get("grep", {}).get("matched_words", set())
+            matched = op_state.get(args.operation, {}).get("matched_words", set())
             missing = set(word_list) - matched
             sys.stderr.write("Words not seen in input: (n=" + str(len(missing)) + ") " + ", ".join(sorted(missing)) + "\n")
     else:
-        if args.operation in ["grep", "numeric_map"]:
+        if args.operation in ["filter", "factorize"]:
             processed_df, state = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
-        elif args.operation in ["view", "regex_capture", "viewheader"]:
+        elif args.operation in ["view", "extract", "headers"]:
             processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col, raw_first_line)
         else:
             processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
-        if args.operation == "grep" and args.word_file and args.list_missing_words:
+        if args.operation == "filter" and getattr(args, "word_file", None) and getattr(args, "list_missing_words", False):
             with open(args.word_file, 'r', encoding='utf-8') as f:
                 word_list = [line.strip() for line in f if line.strip()]
             matched = state.get("matched_words", set()) if state else set()
-            sys.stderr.write("Words not seen in input: " + ", ".join(sorted(matched)) + "\n")
+            missing = set(word_list) - matched
+            sys.stderr.write("Words not seen in input: (n=" + str(len(missing)) + ") " + ", ".join(sorted(missing)) + "\n")
         _write_output_data(processed_df, args, input_sep, is_header_present, header_printed)
 
 if __name__ == "__main__":
     main()
-
-    
