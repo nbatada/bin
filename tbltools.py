@@ -12,31 +12,7 @@ import csv  # For CSV formatting
 import warnings
 warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
 import math
-# LAST UPDATED ON:  11 Aug 2025, 11pm
-
-'''
-USAGE:
-country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year
-
-
-$ tbltool.py -f test.tsv filter_columns --is-numeric --index sample --keep_columns country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year -v | less -S
-
-# melt
-tbltool.py -f test.tsv melt --id_vars sample,country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year
-
-
-tbltool.py -f test.tsv heatmap   --index sample   --row_annotations country_of_collection_site,donor_id,tissue,type,biosample_confirmed_diagnosis,sex,excision_year   --zscore   -o /tmp/t.pdf --no_annot_legend --figure_size '16,6'
-
-
-tbltool.py -f test.tsv pca   --index sample   --color_by country_of_collection_site   --shape_by excision_year   --scale --no_biplot --top_loadings 10   --legend_outside   --figure_size 12,6   -o /tmp/t.pdf
-
-tbltool.py -f test.tsv detect-outliers \
-  --index sample --top_k 5 \
-  --plot_bars --bars_mode by_feature --bars_max_outliers 10 \
-  --bars_output /tmp/iforest_features.pdf
-
-
-'''
+# LAST UPDATED ON:  11 Aug 2025
 
 # Default chunk size when processing input in low-memory mode.
 CHUNK_SIZE = 10000
@@ -845,14 +821,22 @@ def _handle_pca(df, args, input_sep, is_header_present, row_idx_col):
     if not numeric_columns:
         raise ValueError("No numeric columns found in the dataset for PCA.")
 
-    # Drop rows with NA in numeric slice
-    X_df = numeric_df.dropna()
-    if X_df.empty:
-        raise ValueError("No complete rows found in numeric columns for PCA after dropping missing values.")
-    row_ids = X_df.index
+    # NEW: keep all samples; drop all-NA columns; impute NaNs per column
+    num = numeric_df.copy()
 
-    # Optionally scale
-    X = X_df.values
+    # Drop columns that have no finite data at all
+    keep_cols = num.columns[num.notna().any(axis=0)]
+    num = num.loc[:, keep_cols]
+    if num.shape[1] < 2:
+        raise ValueError("Not enough numeric features with data for PCA after removing all-NA columns.")
+
+    # Median impute per feature (keeps all rows)
+    X_df = num.fillna(num.median(numeric_only=True))
+
+    row_ids = X_df.index
+    numeric_columns = list(X_df.columns)   # keep in sync with loadings/features
+    
+    X = X_df.values.astype(float)
     if getattr(args, "scale", False):
         X = StandardScaler(with_mean=True, with_std=True).fit_transform(X)
 
@@ -1071,9 +1055,12 @@ def _handle_isolation_forest(df, args, input_sep, is_header_present, row_idx_col
     if not numeric_columns:
         raise ValueError("No numeric columns found for Isolation Forest.")
     # Keep only complete rows for modeling
-    X_df = numeric_df.dropna()
-    if X_df.empty:
-        raise ValueError("No complete rows in numeric columns for Isolation Forest.")
+    # NEW: keep all samples; drop all-NA columns; median impute
+    num = numeric_df.loc[:, numeric_df.notna().any(axis=0)]
+    if num.shape[1] == 0:
+        raise ValueError("No usable numeric features (all columns are NA).")
+    
+    X_df = num.fillna(num.median(numeric_only=True))
 
     # Optional scaling: z-score with protection for constant columns (std==0)
     if getattr(args, "no_scale", False):
