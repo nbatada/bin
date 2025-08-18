@@ -12,7 +12,10 @@ import csv  # For CSV formatting
 import warnings
 warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
 import math
-# LAST UPDATED ON:  11 Aug 2025
+
+#---
+# LAST UPDATED ON:  18 Aug 2025, 2pm -- renamed functions by group and re‐formatted help groups
+#---
 
 # Default chunk size when processing input in low-memory mode.
 CHUNK_SIZE = 10000
@@ -59,28 +62,7 @@ def _link_from_corr(corr: pd.DataFrame, method="average"):
     condensed = np.nan_to_num(condensed, nan=1.0, posinf=1.0, neginf=1.0)
     return linkage(condensed, method=method)
 
-def _helper_extract_numeric_columns(df, exclude_cols=None):
-    """
-    Return (numeric_df, numeric_columns) where columns are coerced to numeric
-    if *all* non-null values are numeric. Columns in exclude_cols are ignored.
-    """
-    if exclude_cols is None:
-        exclude_cols = []
-    numeric_columns = []
-    numeric_df = pd.DataFrame(index=df.index)
-    for col in df.columns:
-        if col in exclude_cols:
-            continue
-        converted = pd.to_numeric(df[col], errors='coerce')
-        non_null = df[col].dropna()
-        if not non_null.empty and converted[non_null.index].isna().any():
-            continue
-        numeric_columns.append(col)
-        numeric_df[col] = converted
-    return numeric_df, numeric_columns
 
-# Back-compat alias so any older calls still work
-extract_numeric_columns = _helper_extract_numeric_columns
 
 def _helper_extract_numeric_columns(df, exclude_cols=None):
     """
@@ -263,20 +245,21 @@ def _setup_arg_parser():
     subparsers = parser.add_subparsers(dest="operation", 
                                        help="Available operations. Use 'tbl.py <operation> --help' for details.")
     
-    # TRANSPOSE
+    # TRANSPOSE (table op)
     subparsers.add_parser(
         "transpose",
         help="Transpose the input table. The first column's values are used as the header in the new output table."
     )
     
-    # MOVE
-    parser_move = subparsers.add_parser("move", help="Move a column. Required: --column and --dest_column.")
+    # MOVE (column op)
+    parser_move = subparsers.add_parser("move",
+                                         help="Move a column. Required: --column and --dest_column.")
     parser_move.add_argument("-n", "--column", required=True, 
                              help="Source column (1-indexed or name).")
     parser_move.add_argument("-j", "--dest_column", required=True, 
                              help="Destination column (1-indexed or name).")
     
-    # COL_INSERT (add_col)
+    # ADD_COL -> renamed to INSERT_COL (column op)
     parser_col_insert = subparsers.add_parser("add_col",
                                               help="Insert a new column. Required: --column and --value.")
     parser_col_insert.add_argument("-n", "--column", required=True, 
@@ -286,13 +269,13 @@ def _setup_arg_parser():
     parser_col_insert.add_argument("--new_header", default="new_column", 
                                    help="Header name for the new column (default: 'new_column').")
     
-    # COL_DROP (drop_col)
+    # DROP_COL (column op)
     parser_col_drop = subparsers.add_parser("drop_col",
                                             help="Drop columns. Required: --column.")
     parser_col_drop.add_argument("-n", "--column", required=True, 
                                  help="Comma-separated list of column(s) (1-indexed or names) to drop. Use 'all' to drop all columns.")
     
-    # GREP rows (filter)
+    # FILTER (row op; originally grep rows)
     parser_grep = subparsers.add_parser("filter", 
                             help="Filter rows. Required: --column and one of --pattern, --starts_with, --ends_with, or --word_file.")
     grep_group = parser_grep.add_mutually_exclusive_group(required=True)
@@ -311,7 +294,7 @@ def _setup_arg_parser():
     parser_grep.add_argument("-v", "--invert", action="store_true",
                                help="Invert match: select rows that do NOT match the specified criteria.")
 
-    # AGGR (aggregate)
+    # AGGREGATE (table op)
     parser_aggr = subparsers.add_parser("aggregate",
         help="Group and aggregate data via common functions: sum, mean, list, value_counts, entropy.")
     parser_aggr.add_argument("--group", required=True,
@@ -325,7 +308,7 @@ def _setup_arg_parser():
     parser_aggr.add_argument("--melted", action="store_true",
                              help="Indicate that the input is in melted (long) format.")
 
-    # SPLIT (split_col)
+    # SPLIT_COL (column op)
     parser_split = subparsers.add_parser("split_col", help="Split a column. Required: --column and --delimiter.")
     parser_split.add_argument("-n", "--column", required=True,
                               help="Column to split (1-indexed or name).")
@@ -334,7 +317,7 @@ def _setup_arg_parser():
     parser_split.add_argument("--new_header_prefix", default="split_col",
                               help="Prefix for the new columns (default: 'split_col').")
     
-    # JOIN (join_col)
+    # JOIN_COL (column op)
     parser_join = subparsers.add_parser("join_col", 
         help="Join columns. Required: --column. Optionally, --target_column specifies the destination for the joined column.")
     parser_join.add_argument("-n", "--column", required=True,
@@ -346,7 +329,7 @@ def _setup_arg_parser():
     parser_join.add_argument("-j", "--target_column",
                              help="Target column (1-indexed or name) where the joined column will be placed.")
     
-    # TR (replace)
+    # TRANSLATE (column op; formerly replace)
     parser_tr = subparsers.add_parser("replace", 
         help="Translate values. Required: --column and either --dict_file or --from_val with --to_val.")
     parser_tr.add_argument("-n", "--column", required=True,
@@ -362,7 +345,7 @@ def _setup_arg_parser():
     parser_tr.add_argument("--in_place", action="store_true",
                              help="Replace the original column with the translated values.")
     
-    # SORT
+    # SORT (table op)
     parser_sort = subparsers.add_parser("sort", 
         help="Sort table. Required: --column. (Not compatible with lowmem mode.)")
     parser_sort.add_argument("-n", "--column", required=True,
@@ -375,27 +358,37 @@ def _setup_arg_parser():
                              help="Use a default mapping for scientific suffixes and override any supplied --suffix_map.")
     parser_sort.add_argument("-ps", "--pattern_string", help="Optional additional regex pattern for a secondary string sort key.")
     
-    # CLEANUP HEADER
+    # CLEANUP HEADER (table op)
     parser_cleanup_header = subparsers.add_parser("cleanup_header",
                                                   help="Clean header names (lowercase, remove special characters, replace spaces with underscores).")
     
-    # CLEANUP VALUES
+    # CLEANUP_VALUES (column op)
     parser_cleanup_values = subparsers.add_parser("cleanup_values",
                                                   help="Clean values in specified columns. Required: --column.")
     parser_cleanup_values.add_argument("-n", "--column", required=True,
                                         help="Comma-separated list of columns (1-indexed or names) to clean. Use 'all' to clean every column.")
     
-    # PREFIX ADD (prefix)
-    parser_prefix_add = subparsers.add_parser("prefix",
+    # ADD PREFIX (column op)
+    parser_add_prefix = subparsers.add_parser("add_prefix",
                                               help="Add a prefix to column values. Required: --column and --string.")
-    parser_prefix_add.add_argument("-n", "--column", required=True,
-                                   help="Comma-separated list of columns (1-indexed or names) to prepend with a prefix. Use 'all' for every column.")
-    parser_prefix_add.add_argument("-v", "--string", required=True,
+    parser_add_prefix.add_argument("-n", "--column", required=True,
+                                   help="Comma-separated list of columns (1-indexed or names) for which to prepend the prefix. Use 'all' for every column.")
+    parser_add_prefix.add_argument("-v", "--string", required=True,
                                    help="The prefix string to add. Supports escape sequences.")
-    parser_prefix_add.add_argument("-d", "--delimiter", default="",
+    parser_add_prefix.add_argument("-d", "--delimiter", default="",
                                    help="Delimiter to insert between the prefix and the original value (default: none). Supports escape sequences.")
+    # ADD SUFFIX (column op)
+    parser_add_suffix = subparsers.add_parser("add_suffix",
+                                              help="Add a suffix to column values. Required: --column and --string.")
+    parser_add_suffix.add_argument("-n", "--column", required=True,
+                                   help="Comma-separated list of columns (1-indexed or names) for which to append the suffix. Use 'all' for every column.")
+    parser_add_suffix.add_argument("-v", "--string", required=True,
+                                   help="The suffix string to add. Supports escape sequences.")
+    parser_add_suffix.add_argument("-d", "--delimiter", default="",
+                                   help="Delimiter to insert between the original value and the suffix (default: none). Supports escape sequences.")
+
     
-    # VALUE COUNTS (stats)
+    # VALUE COUNTS (table op)
     parser_value_counts = subparsers.add_parser("stats",
                                                 help="Count top occurring values. Required: --column.")
     parser_value_counts.add_argument("-T", "--top_n", type=int, default=5,
@@ -403,7 +396,7 @@ def _setup_arg_parser():
     parser_value_counts.add_argument("-n", "--column", required=True,
                                      help="Comma-separated list of columns (1-indexed or names) to count. Use 'all' for every column.")
     
-    # STRIP
+    # STRIP (column op)
     parser_strip = subparsers.add_parser("strip",
                                           help="Remove a regex pattern from column values. Required: --column and --pattern.")
     parser_strip.add_argument("-n", "--column", required=True,
@@ -415,14 +408,14 @@ def _setup_arg_parser():
     parser_strip.add_argument("--in_place", action="store_true",
                               help="Modify the column in place instead of creating a new column.")
     
-    # NUMERIC MAP (factorize)
+    # FACTORIZE (column op)
     parser_numeric_map = subparsers.add_parser("factorize",
                                                help="Map unique string values to numbers. Required: --column.")
     parser_numeric_map.add_argument("-n", "--column", required=True,
                                     help="Column (1-indexed or name) whose unique values are to be mapped to numbers.")
     parser_numeric_map.add_argument("--new_header", help="Header for the new numeric mapping column (default: 'numeric_map_of_ORIGINAL_COLUMN_NAME').")
     
-    # REGEX CAPTURE (extract)
+    # REGEX CAPTURE (column op)
     parser_regex_capture = subparsers.add_parser("extract",
                                                  help="Capture substrings using a regex capturing group. Required: --column and --pattern.")
     parser_regex_capture.add_argument("-n", "--column", required=True,
@@ -432,7 +425,7 @@ def _setup_arg_parser():
     parser_regex_capture.add_argument("--new_header", default="_captured",
                                       help="Suffix or new header for the captured column (default: '_captured').")
     
-    # VIEW
+    # VIEW (table op)
     parser_view = subparsers.add_parser("view",
                                         help="Display the data in a formatted table.")
     parser_view.add_argument("--max_rows", type=int, default=20,
@@ -447,7 +440,7 @@ def _setup_arg_parser():
                              help="Output as plain TSV without pretty-print alignment.")
     parser_view.set_defaults(pretty_print=True)
     
-    # CUT (select)
+    # CUT (select table op)
     parser_cut = subparsers.add_parser("select",
                                        help="Select columns. Provide either a regex pattern or, if --list is specified, a list of column names.")
     parser_cut.add_argument("pattern", nargs="?", default=None,
@@ -458,11 +451,11 @@ def _setup_arg_parser():
     parser_cut.add_argument("--list", action="store_true",
                         help="Interpret the pattern as a comma-separated list of column names for selection in the given order.")
     
-    # VIEWHEADER (headers)
+    # HEADERS (table op)
     subparsers.add_parser("headers",
                           help="Display header names and positions.")
     
-    # ROW_INSERT
+    # ROW_INSERT (row op)
     parser_row_insert = subparsers.add_parser("row_insert",
                                               help="Insert a new row at a specified 1-indexed position. Use --row_idx 0 to insert at the header.")
     parser_row_insert.add_argument("-i", "--row_idx", type=int, default=0,
@@ -470,13 +463,13 @@ def _setup_arg_parser():
     parser_row_insert.add_argument("-v", "--values",
                                    help="Comma-separated list of values for the new row. Supports escape sequences.")
     
-    # ROW_DROP
+    # ROW_DROP (row op)
     parser_row_drop = subparsers.add_parser("row_drop",
                                             help="Delete row(s) at a specified 1-indexed position. Use --row_idx 0 to drop the header row.")
     parser_row_drop.add_argument("-i", "--row_idx", type=int, required=True,
                                  help="Row position to drop (1-indexed, 0 drops the header).")
     
-    # ggplot subcommand using Plotnine (plot)
+    # ggplot subcommand using Plotnine (plot op)
     parser_ggplot = subparsers.add_parser("plot",
                                           help="Generate a ggplot using Plotnine and save to a PDF/PNG file.")
     parser_ggplot.add_argument("--geom", required=True, choices=["boxplot", "bar", "point", "hist", "tile", "pie"],
@@ -501,7 +494,7 @@ def _setup_arg_parser():
     parser_ggplot.add_argument("--dont_replace_dots_in_colnames", action="store_true",
                                help="Do not replace '.' with '_' in column names.")
     
-    # matplotlib subcommand for venn diagrams (plot_mpl)
+    # matplotlib subcommand for venn diagrams (plot op)
     parser_mpl = subparsers.add_parser("plot_mpl",
                                        help="Generate a matplotlib-based plot (supports Venn diagrams) and save to a PDF/PNG file.")
     parser_mpl.add_argument("--mode", required=True, choices=["venn2", "venn3"],
@@ -514,7 +507,7 @@ def _setup_arg_parser():
     parser_mpl.add_argument("-o", "--output", required=True,
                            help="Output file name (pdf or png).")
     
-    # MELT
+    # MELT (table op)
     parser_melt = subparsers.add_parser("melt",
                                         help="Melt the input table into a long format.")
     parser_melt.add_argument("--id_vars", required=True,
@@ -526,7 +519,7 @@ def _setup_arg_parser():
     parser_melt.add_argument("--value_name", default="value",
                              help="Name for the new value column (default: 'value').")
     
-    # UNMELT (pivot)
+    # UNMELT (pivot) (table op)
     parser_unmelt = subparsers.add_parser("pivot",
                                           help="Pivot the melted table back to wide format.")
     parser_unmelt.add_argument("--index", required=True,
@@ -536,7 +529,7 @@ def _setup_arg_parser():
     parser_unmelt.add_argument("--value", required=True,
                                help="Column name that contains the values.")
     
-    # ADD_METADATA (join_meta)
+    # ADD_METADATA (table op)
     parser_add_metadata = subparsers.add_parser("join_meta",
                                                 help="Merge a metadata file into the main table based on key columns.")
     parser_add_metadata.add_argument("--meta", required=True,
@@ -548,7 +541,7 @@ def _setup_arg_parser():
     parser_add_metadata.add_argument("--meta_sep", default=None,
                                      help="Field separator for the metadata file. If not provided, the global --sep is used.")
 
-    # FILTER_COLUMNS (filter_cols)
+    # FILTER_COLUMNS (table op)
     parser_filter = subparsers.add_parser("filter_cols",
         help="Filter columns based on criteria. Use --is-numeric, --is-integer, --is-same, --min_value, --max_value. With -v, selection is inverted.")
     parser_filter.add_argument("--is-numeric", action="store_true",
@@ -568,8 +561,7 @@ def _setup_arg_parser():
     parser_filter.add_argument("--keep_columns",
                                help="Comma-separated list of column names to always keep (ignored during filtering) and placed immediately after the index column in the output.")
     
-
-    # PCA Plot
+    # PCA Plot (plot op)
     parser_pca = subparsers.add_parser("pca",
                                        help=("Perform PCA on numeric columns and plot PC1 vs PC2. "
                                              "Optional color/shape legends outside, plus a loadings panel "
@@ -605,7 +597,7 @@ def _setup_arg_parser():
                             help="Relative height of the loadings panel (0–1, default 0.28).")
     
     
-    # DETECT OUTLIERS (detect_outliers)
+    # DETECT OUTLIERS (table op)
     parser_if = subparsers.add_parser("detect_outliers",
                                       help="Detect outliers with Isolation Forest and annotate rows.")
     parser_if.add_argument("--index", help="Label column (1-indexed or name) for readability.")
@@ -633,10 +625,10 @@ def _setup_arg_parser():
                            help="Bar-plot layout: 'by_feature' (one subplot per outlier feature across samples) "
                            "or 'by_sample' (one subplot per outlier sample with its top-K features).")
 
-    # HEATMAP
+    # HEATMAP (plot op)
     parser_heatmap = subparsers.add_parser(
         "heatmap",
-        help=("Heatmap of samples (rows) × features (columns). "
+        help=("Heatmap of samples (rows) x features (columns). "
               "Use --corr for feature–feature Spearman correlation.")
     )
     parser_heatmap.add_argument("--index", required=True,
@@ -680,7 +672,7 @@ def _setup_arg_parser():
     parser_heatmap.add_argument("-o", "--output", required=True,
                                 help="Output file name (.pdf or .png).")
     
-    # KV UNPACK (kv_unpack)
+    # KV UNPACK (column op)
     parser_unpack = subparsers.add_parser(
         "kv_unpack",
         help=("Unpack a column containing key-value pairs into separate columns.\n"
@@ -700,838 +692,594 @@ def _setup_arg_parser():
     return parser
 
 # --------------------------
-# Operation Handler Functions
+# Operation Handler Functions (renamed by group)
 # --------------------------
-def _handle_unpack_column(df, args, input_sep, is_header_present, row_idx_col_name):
-    import pandas as pd
+# Column operations --------------------------------------------
 
-    # Get the target column index and name.
+def _handle_move_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    from_idx = _parse_column_arg(args.column, df.columns, is_header_present, "source column (--column)")
+    to_idx = _parse_column_arg(args.dest_column, df.columns, is_header_present, "destination column (--dest_column)")
+    if to_idx > df.shape[1]:
+        to_idx = df.shape[1]
+    _print_verbose(args, f"Moving column '{df.columns[from_idx]}' from index {from_idx} to {to_idx}.")
+    col_name = df.columns[from_idx]
+    data = df.pop(col_name)
+    df.insert(to_idx, col_name, data)
+    return df
+
+def _handle_insert_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    pos = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
+    value = codecs.decode(args.value, 'unicode_escape')
+    new_header = args.new_header
+    if is_header_present and new_header in df.columns:
+        new_header = get_unique_header(new_header, df)
+        _print_verbose(args, f"New header exists; using '{new_header}'.")
+    df.insert(pos, new_header, value)
+    return df
+
+def _handle_drop_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Dropping columns: {names}.")
+    df = df.drop(columns=names)
+    return df
+
+def _handle_split_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
+    delim = codecs.decode(args.delimiter, 'unicode_escape')
+    original = df.columns[col]
+    _print_verbose(args, f"Splitting column '{original}' with delimiter {delim!r}.")
+    split_df = df.iloc[:, col].astype(str).str.split(delim, expand=True).fillna('')
+    new_headers = []
+    for i in range(split_df.shape[1]):
+        candidate = f"{original}_{args.new_header_prefix}_{i+1}"
+        new_headers.append(get_unique_header(candidate, df) if is_header_present else f"{args.new_header_prefix}_{i+1}")
+    split_df.columns = new_headers
+    _print_verbose(args, f"New split headers: {new_headers}.")
+    df = df.drop(columns=[original])
+    left = df.iloc[:, :col]
+    right = df.iloc[:, col:]
+    df = pd.concat([left, split_df, right], axis=1)
+    return df
+
+def _handle_join_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
+    if not indices:
+        raise ValueError("Error: No columns specified for join operation.")
+    delim = codecs.decode(args.delimiter, 'unicode_escape')
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Joining columns {names} with delimiter {delim!r}.")
+    joined = df.iloc[:, indices[0]].astype(str)
+    for i in range(1, len(indices)):
+        joined += delim + df.iloc[:, indices[i]].astype(str)
+    if args.target_column:
+        target = _parse_column_arg(args.target_column, df.columns, is_header_present, "target column (--target_column)")
+    else:
+        target = indices[0]
+    new_header = args.new_header
+    if is_header_present:
+        new_header = get_unique_header(new_header, df)
+    # compute how many dropped columns lie before the target position
+    before_target = sum(1 for i in indices if i < target)
+    drop_names = [df.columns[i] for i in sorted(indices, reverse=True)]
+    df = df.drop(columns=drop_names)
+    pos = min(max(target - before_target, 0), df.shape[1])
+    df.insert(pos, new_header, joined.reset_index(drop=True))
+    _print_verbose(args, f"Inserted joined column '{new_header}' at index {pos}.")
+    return df
+
+def _handle_translate_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
+    original = df.columns[col]
+    translated = None
+    if args.dict_file:
+        mapping = {}
+        try:
+            _print_verbose(args, f"Loading translation mapping from '{args.dict_file}' using separator {input_sep!r}.")
+            with open(args.dict_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(input_sep, 1)
+                    if len(parts) == 2:
+                        mapping[parts[0]] = parts[1]
+                    else:
+                        sys.stderr.write(f"Warning: Skipping malformed line: '{line}'.\n")
+            _print_verbose(args, f"Loaded {len(mapping)} translations.")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Error: Dictionary file not found: '{args.dict_file}'")
+        except Exception as e:
+            raise RuntimeError(f"Error reading dictionary file: {e}")
+        translated = df.iloc[:, col].astype(str).apply(lambda x: mapping.get(x, x))
+    elif args.from_val:
+        if not args.to_val:
+            raise ValueError("Error: Must specify --to_val when using --from_val.")
+        from_val = codecs.decode(args.from_val, 'unicode_escape')
+        to_val = codecs.decode(args.to_val, 'unicode_escape')
+        _print_verbose(args, f"Translating values in '{original}' from '{from_val}' to '{to_val}' ({'regex' if args.regex else 'literal'}).")
+        try:
+            translated = df.iloc[:, col].astype(str).str.replace(from_val, to_val, regex=args.regex)
+        except re.error as e:
+            raise ValueError(f"Error: Invalid regex '{from_val}': {e}")
+    else:
+        raise ValueError("Error: For replace operation, specify either a dict file (--dict_file) or both --from_val and --to_val.")
+    if args.in_place:
+        df.iloc[:, col] = translated
+    else:
+        if args.new_header.startswith("_"):
+            new_header = str(original) + args.new_header
+        else:
+            new_header = args.new_header
+        if is_header_present:
+            new_header = get_unique_header(new_header, df)
+        df.insert(col+1, new_header, translated.reset_index(drop=True))
+        _print_verbose(args, f"Inserted translated column '{new_header}' after '{original}'.")
+    return df
+
+def _handle_clean_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Cleaning values in columns: {names}.")
+    for i in indices:
+        df.iloc[:, i] = df.iloc[:, i].apply(_clean_string_for_header_and_data)
+    return df
+
+def _handle_prefix_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
+    prefix = codecs.decode(args.string, 'unicode_escape')
+    delim = codecs.decode(args.delimiter, 'unicode_escape')
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Adding prefix '{prefix}' with delimiter '{delim}' to columns: {names}.")
+    for i in indices:
+        df.iloc[:, i] = df.iloc[:, i].astype(str).apply(lambda x: f"{prefix}{delim}{x}")
+    return df
+
+def _handle_suffix_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
+    suffix = codecs.decode(args.string, 'unicode_escape')
+    delim = codecs.decode(args.delimiter, 'unicode_escape')
+    names = [df.columns[i] for i in indices]
+    _print_verbose(args, f"Adding suffix '{suffix}' with delimiter '{delim}' to columns: {names}.")
+    for i in indices:
+        df.iloc[:, i] = df.iloc[:, i].astype(str).apply(lambda x: f"{x}{delim}{suffix}")
+    return df
+
+def _handle_strip_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
+    original = df.columns[col]
+    try:
+        new_series = df.iloc[:, col].astype(str).str.replace(args.pattern, '', regex=True)
+    except re.error as e:
+        raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
+    if args.in_place:
+        df.iloc[:, col] = new_series
+    else:
+        if args.new_header.startswith("_"):
+            new_header = str(original) + args.new_header
+        else:
+            new_header = args.new_header
+        if is_header_present:
+            new_header = get_unique_header(new_header, df)
+        df.insert(col+1, new_header, new_series.reset_index(drop=True))
+        _print_verbose(args, f"Inserted stripped column '{new_header}' after '{original}'.")
+    return df
+
+def _handle_factorize_col(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
+    mapping, next_id = ({}, 1) if state is None else state
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
+    original = df.columns[col]
+    _print_verbose(args, f"Mapping unique values in '{original}' to numeric identifiers.")
+    new_header = args.new_header if args.new_header else f"numeric_map_of_{original}"
+    if is_header_present:
+        new_header = get_unique_header(new_header, df)
+    def mapper(x):
+        nonlocal next_id
+        if x not in mapping:
+            mapping[x] = next_id
+            next_id += 1
+        return mapping[x]
+    mapped = df.iloc[:, col].astype(str).apply(mapper)
+    df.insert(col+1, new_header, mapped)
+    return df, (mapping, next_id)
+
+def _handle_capture_col(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content=None):
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
+    base = df.columns[col] if is_header_present else f"captured_column_{col+1}"
+    if args.new_header.startswith("_"):
+        new_header = str(base) + args.new_header
+    else:
+        new_header = args.new_header
+    if is_header_present:
+        new_header = get_unique_header(new_header, df)
+        _print_verbose(args, f"Using unique header: {new_header}.")
+    _print_verbose(args, f"Capturing groups using regex '{args.pattern}' on column '{base}'.")
+    try:
+        captured = df.iloc[:, col].astype(str).apply(lambda x: ';'.join(re.findall(args.pattern, x)))
+    except re.error as e:
+        raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
+    df.insert(len(df.columns), new_header, captured.reset_index(drop=True))
+    return df
+
+def _handle_unpack_kv_col(df, args, input_sep, is_header_present, row_idx_col_name):
+    import pandas as pd
     col_idx = _parse_column_arg(args.column, df.columns, is_header_present, "column")
     original_col = df.columns[col_idx]
-    
-    # Get the user-provided list of keys (trimmed)
     keys_list = [k.strip() for k in args.keys.split(",") if k.strip()]
     if not keys_list:
         raise ValueError("Error: No keys provided in --keys.")
-
-    # Decode separators (allowing escape sequences)
     field_sep = codecs.decode(args.field_sep, 'unicode_escape')
     kv_sep = codecs.decode(args.kv_sep, 'unicode_escape')
-
-    # Define a helper function to process a single cell.
     def unpack_cell(cell):
-        # Return an empty dict if cell is missing or empty.
         if pd.isna(cell) or str(cell).strip() == "":
             return {}
-        # Split by the field separator.
         tokens = str(cell).split(field_sep)
         result = {}
         for token in tokens:
             token = token.strip()
             if token == "":
                 continue
-            # Check that the token contains the key/value separator.
             if kv_sep not in token:
-                continue  # ignore tokens that do not match the key-value pattern
+                continue
             parts = token.split(kv_sep, 1)
             if len(parts) != 2:
                 continue
             key_candidate = parts[0].strip()
             value_candidate = parts[1].strip()
-            # Remove surrounding quotes if present.
             if (value_candidate.startswith('"') and value_candidate.endswith('"')) or \
                (value_candidate.startswith("'") and value_candidate.endswith("'")):
                 value_candidate = value_candidate[1:-1].strip()
-            # If the key is one of the desired keys:
             if key_candidate in keys_list:
-                # If already seen in this row, raise an error.
                 if key_candidate in result:
                     raise ValueError(f"Error: Multiple occurrences of key '{key_candidate}' found in cell: {cell}")
                 result[key_candidate] = value_candidate
         return result
-
-    # Process the target column: create a Series of dicts.
     unpacked = df[original_col].apply(unpack_cell)
-    
-    # For each desired key, create a new column (assign NA if key is absent).
     new_columns = {}
     for key in keys_list:
         new_col_name = f"{original_col}_{key}"
-        # Check for collision with existing columns:
         if new_col_name in df.columns:
             raise ValueError(f"Error: Generated column name '{new_col_name}' already exists in the DataFrame.")
         new_series = unpacked.apply(lambda d: d.get(key, pd.NA))
         new_columns[new_col_name] = new_series
-
-    # Insert new columns immediately after the original column.
-    # We insert them in reverse order so the final order follows keys_list.
     orig_index = df.columns.get_loc(original_col)
     for key in reversed(keys_list):
         new_col_name = f"{original_col}_{key}"
         new_series = new_columns[new_col_name]
         df.insert(orig_index + 1, new_col_name, new_series)
-    
     return df
 
+# Row operations --------------------------------------------
 
+def _handle_insert_row(df, args, input_sep, is_header_present, row_idx_col_name):
+    insert_pos = args.row_idx - 1
+    if args.values:
+        values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')]
+    elif df.empty:
+        sys.stderr.write("Error: Cannot insert row into an empty table without explicit values.\n")
+        sys.exit(1)
+    else:
+        values = [f"col{i+1}" for i in range(df.shape[1])]
+        _print_verbose(args, f"Generated default row values: {values}")
+    if len(values) > df.shape[1]:
+        values = values[:df.shape[1]]
+        _print_verbose(args, "Truncated row values to match column count.")
+    elif len(values) < df.shape[1]:
+        values.extend([''] * (df.shape[1] - len(values)))
+        _print_verbose(args, "Padded row values to match column count.")
+    new_row = pd.DataFrame([values], columns=df.columns)
+    if insert_pos >= len(df):
+        df = pd.concat([df, new_row], ignore_index=True)
+    else:
+        df = pd.concat([df.iloc[:insert_pos], new_row, df.iloc[insert_pos:]], ignore_index=True)
+    _print_verbose(args, f"Inserted row at position {args.row_idx}. New shape: {df.shape}.")
+    return df
 
+def _handle_drop_row(df, args, input_sep, is_header_present, row_idx_col_name):
+    drop_pos = args.row_idx - 1
+    if drop_pos < 0 or drop_pos >= len(df):
+        raise IndexError(f"Error: Row index {args.row_idx} is out of bounds. Table has {len(df)} rows.")
+    df = df.drop(df.index[drop_pos]).reset_index(drop=True)
+    _print_verbose(args, f"Dropped row at position {args.row_idx}. New shape: {df.shape}.")
+    return df
 
-
-
-def _handle_pca(df, args, input_sep, is_header_present, row_idx_col):
-    """
-    PCA scatter with optional outside legends and a loadings panel.
-    - Color by a categorical column (--color_by)
-    - Shape by a categorical column (--shape_by)
-    - Loadings panel below the scatter:
-        * --loadings_style dots (VizDimLoadings style) or heatmap
-        * --top_loadings N picks the top |loading| across PC1/PC2
-    """
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
-    from sklearn.decomposition import PCA
-    from sklearn.preprocessing import StandardScaler
-    import math
-
-    # Figure size
-    try:
-        width, height = map(float, args.figure_size.split(','))
-    except Exception as e:
-        raise ValueError("Invalid format for --figure_size. Expected width,height") from e
-
-    # Resolve optional columns
-    label_col = None
-    color_col = None
-    shape_col = None
-    if getattr(args, "index", None):
-        idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
-        label_col = df.columns[idx]
-    if getattr(args, "color_by", None):
-        idx = _parse_column_arg(args.color_by, df.columns, is_header_present, "color_by")
-        color_col = df.columns[idx]
-    if getattr(args, "shape_by", None):
-        idx = _parse_column_arg(args.shape_by, df.columns, is_header_present, "shape_by")
-        shape_col = df.columns[idx]
-
-    # Numeric slice
-    exclude = [c for c in [label_col, color_col, shape_col] if c]
-    numeric_df, numeric_columns = extract_numeric_columns(df, exclude_cols=exclude)
-    if not numeric_columns:
-        raise ValueError("No numeric columns found in the dataset for PCA.")
-
-    # NEW: keep all samples; drop all-NA columns; impute NaNs per column
-    num = numeric_df.copy()
-
-    # Drop columns that have no finite data at all
-    keep_cols = num.columns[num.notna().any(axis=0)]
-    num = num.loc[:, keep_cols]
-    if num.shape[1] < 2:
-        raise ValueError("Not enough numeric features with data for PCA after removing all-NA columns.")
-
-    # Median impute per feature (keeps all rows)
-    X_df = num.fillna(num.median(numeric_only=True))
-
-    row_ids = X_df.index
-    numeric_columns = list(X_df.columns)   # keep in sync with loadings/features
-    
-    X = X_df.values.astype(float)
-    if getattr(args, "scale", False):
-        X = StandardScaler(with_mean=True, with_std=True).fit_transform(X)
-
-    # PCA
-    pca_model = PCA(n_components=2, random_state=None)
-    scores = pca_model.fit_transform(X)
-    pc1, pc2 = scores[:, 0], scores[:, 1]
-    evr = pca_model.explained_variance_ratio_
-
-    # --- Prepare color mapping
-    color_values = None
-    color_handles = None
-    color_title = None
-    if color_col:
-        s = df.loc[row_ids, color_col].where(df.loc[row_ids, color_col].notna(), "NA").astype(str)
-        cats = list(pd.Categorical(s).categories)
+def _handle_filter_row(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
+    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
+    series = df.iloc[:, col].astype(str)
+    if args.word_file:
         try:
-            cmap = plt.colormaps.get_cmap('tab20')
-        except AttributeError:
-            cmap = plt.cm.get_cmap('tab20')
-        color_map = {cat: cmap(i % 20) for i, cat in enumerate(cats)}
-        color_values = s.map(color_map).values
-        color_title = color_col
-        color_handles = [Line2D([0],[0], marker='o', linestyle='',
-                                markerfacecolor=color_map[c], markeredgecolor='none',
-                                label=str(c)) for c in cats]
-
-    # --- Prepare shape mapping
-    marker_values = None
-    shape_handles = None
-    shape_title = None
-    if shape_col:
-        s = df.loc[row_ids, shape_col].where(df.loc[row_ids, shape_col].notna(), "NA").astype(str)
-        cats = list(pd.Categorical(s).categories)
-        markers = ['o', 's', '^', 'D', 'P', 'X', '*', 'v', '<', '>']
-        shape_map = {cat: markers[i % len(markers)] for i, cat in enumerate(cats)}
-        marker_values = s.map(shape_map).values
-        shape_title = shape_col
-        shape_handles = [Line2D([0],[0], marker=shape_map[c], linestyle='',
-                                markerfacecolor='gray', markeredgecolor='gray',
-                                label=str(c)) for c in cats]
-
-    # --- Layout: scatter on top, loadings panel on bottom (2 columns)
-    # height ratios: [1 - loadings_height, loadings_height]
-    lh = max(0.05, min(0.9, float(getattr(args, "loadings_height", 0.28))))
-    fig = plt.figure(figsize=(width, height))
-    from matplotlib.gridspec import GridSpec
-    gs = GridSpec(2, 2, height_ratios=[1.0 - lh, lh], width_ratios=[1, 1], hspace=0.25, wspace=0.15)
-    ax = fig.add_subplot(gs[0, :])  # scatter spans both columns
-
-    # Draw scatter (by groups if shape/color provided)
-    if color_values is None and marker_values is None:
-        ax.scatter(pc1, pc2, edgecolors='none')
-    else:
-        # group by (color category, shape category) for consistent legends
-        if color_col:
-            color_cat = df.loc[row_ids, color_col].astype(str).values
-        else:
-            color_cat = np.array(["_single"] * len(row_ids))
-        if shape_col:
-            shape_cat = df.loc[row_ids, shape_col].astype(str).values
-        else:
-            shape_cat = np.array(["_single"] * len(row_ids))
-
-        for cc in np.unique(color_cat):
-            for sc in np.unique(shape_cat):
-                mask = (color_cat == cc) & (shape_cat == sc)
-                if not np.any(mask):
-                    continue
-                c = color_map[cc] if color_col else None
-                m = shape_map[sc] if shape_col else 'o'
-                ax.scatter(pc1[mask], pc2[mask], c=[c] if c else None, marker=m, edgecolors='none')
-
-    ax.set_xlabel(f"PC1 ({evr[0]*100:.2f}%)")
-    ax.set_ylabel(f"PC2 ({evr[1]*100:.2f}%)")
-    ax.set_title("PCA Plot")
-    ax.grid(True, alpha=0.3)
-
-    # Optional tiny biplot arrows (off by default)
-    if not getattr(args, "no_biplot", False):
-        load = pca_model.components_.T  # (features x PCs)
-        # auto scale arrows to ~1/3 of scatter extent
-        score_extent = np.max(np.sqrt(pc1**2 + pc2**2)) or 1.0
-        load_norm = np.max(np.sqrt(np.sum(load[:, :2]**2, axis=1))) or 1.0
-        scale = 0.33 * score_extent / load_norm
-        for i, var in enumerate(numeric_columns):
-            vx, vy = (load[i, 0] * scale, load[i, 1] * scale)
-            ax.arrow(0, 0, vx, vy, color='red', alpha=0.35, width=0.0,
-                     length_includes_head=True, head_width=0.02*score_extent)
-
-    # keep track of legends so savefig knows to include them
-    legend_artists = []
-
-    # ---- Legends (outside or inside)
-    def _place_legends_outside(ax, color_handles, shape_handles, color_title, shape_title):
-        blocks = [b for b in [(color_handles, color_title), (shape_handles, shape_title)] if b[0]]
-        if not blocks:
-            return
-        # room on the right for one vs two stacked legends
-        fig.subplots_adjust(right=(0.80 if len(blocks) == 1 else 0.70))
-        y = 1.00
-        for handles, title in blocks:
-            leg = ax.legend(handles=handles, title=title,
-                            loc="upper left", bbox_to_anchor=(1.01, y),
-                            frameon=True, fontsize="small", title_fontsize="small")
-            ax.add_artist(leg)
-            legend_artists.append(leg)     # <-- register for savefig
-            y -= 0.32
-
-    if getattr(args, "legend_outside", False):
-        _place_legends_outside(ax, color_handles, shape_handles, color_title, shape_title)
-    else:
-        if color_handles:
-            leg1 = ax.legend(handles=color_handles, title=color_title,
-                             loc="best", frameon=True, fontsize="small", title_fontsize="small")
-            ax.add_artist(leg1)
-        if shape_handles:
-            leg2 = ax.legend(handles=shape_handles, title=shape_title,
-                             loc="upper left", frameon=True, fontsize="small", title_fontsize="small")
-            ax.add_artist(leg2)
-
-    # Labels (avoid clutter)
-    if label_col:
-        labels = df.loc[row_ids, label_col].astype(str)
-        if len(labels) <= 60:
-            for x, y, txt in zip(pc1, pc2, labels):
-                ax.annotate(txt, (x, y), fontsize=6, xytext=(2, 2), textcoords='offset points')
-
-    # --- Loadings panel (PC1 & PC2)
-    # Select top features by max(|loading_pc1|, |loading_pc2|)
-    load = pca_model.components_.T  # features x PCs
-    pc1_load, pc2_load = load[:, 0], load[:, 1]
-    mag = np.maximum(np.abs(pc1_load), np.abs(pc2_load))
-    n = int(getattr(args, "top_loadings", 10) or 10)
-    keep_idx = np.argsort(-mag)[:max(1, n)]
-    feat = [numeric_columns[i] for i in keep_idx]
-    pc1_k = pc1_load[keep_idx]
-    pc2_k = pc2_load[keep_idx]
-
-    if getattr(args, "loadings_style", "dots") == "heatmap":
-        # simple 2-column heatmap fallback
-        from matplotlib.colors import TwoSlopeNorm
-        ax_hm = fig.add_subplot(gs[1, :])
-        mat = np.vstack([pc1_k, pc2_k]).T
-        vmax = np.max(np.abs(mat)) or 1.0
-        im = ax_hm.imshow(mat, aspect='auto', cmap='bwr', norm=TwoSlopeNorm(0, -vmax, vmax))
-        ax_hm.set_yticks(range(len(feat)))
-        ax_hm.set_yticklabels(feat, fontsize=8)
-        ax_hm.set_xticks([0,1])
-        ax_hm.set_xticklabels(["PC1","PC2"], fontsize=9)
-        ax_hm.set_title("Top loadings")
-        cb = fig.colorbar(im, ax=ax_hm, fraction=0.025, pad=0.02)
-        cb.ax.tick_params(labelsize=8)
-    else:
-        # VizDimLoadings-style dot plots: left=PC1, right=PC2 (shared y)
-        ax_l = fig.add_subplot(gs[1, 0])
-        ax_r = fig.add_subplot(gs[1, 1], sharey=ax_l)
-
-        # order features from strongest to weakest for nice stacking
-        order = np.argsort(-mag[keep_idx])
-        feat = [feat[i] for i in order]
-        pc1_k = pc1_k[order]
-        pc2_k = pc2_k[order]
-
-        y = np.arange(len(feat))
-        maxabs = max(np.max(np.abs(pc1_k)), np.max(np.abs(pc2_k)), 0.1)
-        lim = 1.05 * maxabs
-
-        for axd, vals, title in [(ax_l, pc1_k, "PC1 loadings"), (ax_r, pc2_k, "PC2 loadings")]:
-            axd.axvline(0, lw=0.8, ls='--', alpha=0.6)
-            axd.scatter(vals, y, s=20)
-            axd.set_xlim(-lim, lim)
-            axd.set_yticks(y)
-            axd.set_yticklabels(feat, fontsize=7)
-            axd.set_xlabel(title, fontsize=9)
-            axd.grid(True, axis='x', alpha=0.2)
-        # Only show y tick labels on the left plot
-        plt.setp(ax_r.get_yticklabels(), visible=False)
-
-    # Save
-    ext = os.path.splitext(args.output)[1].lower().lstrip(".") or "pdf"
-    fig.savefig(args.output, format=ext, dpi=300,
-                bbox_inches="tight",
-                bbox_extra_artists=legend_artists)   # <-- important
-    plt.close(fig)
-    sys.exit(0)
-
-def _handle_isolation_forest(df, args, input_sep, is_header_present, row_idx_col):
-    """
-    Detect outlier samples via Isolation Forest and annotate the table.
-
-    Adds columns:
-      - iforest_score       (float; higher = more anomalous)
-      - iforest_is_outlier  (bool)
-      - iforest_topk        (semicolon list of top-K features by |z| for that sample)
-    """
-    import numpy as np
-    import pandas as pd
-    from sklearn.ensemble import IsolationForest
-
-    # Resolve optional index col (not required)
-    label_col = None
-    if getattr(args, "index", None):
-        idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
-        label_col = df.columns[idx]
-
-    # Exclusions
-    exclude = []
-    if label_col:
-        exclude.append(label_col)
-    if getattr(args, "exclude", None):
-        exclude += [c.strip() for c in args.exclude.split(",") if c.strip()]
-
-    # Numeric slice
-    numeric_df, numeric_columns = _helper_extract_numeric_columns(df, exclude_cols=exclude)
-    if not numeric_columns:
-        raise ValueError("No numeric columns found for Isolation Forest.")
-    # Keep only complete rows for modeling
-    # NEW: keep all samples; drop all-NA columns; median impute
-    num = numeric_df.loc[:, numeric_df.notna().any(axis=0)]
-    if num.shape[1] == 0:
-        raise ValueError("No usable numeric features (all columns are NA).")
-    
-    X_df = num.fillna(num.median(numeric_only=True))
-
-    # Optional scaling: z-score with protection for constant columns (std==0)
-    if getattr(args, "no_scale", False):
-        Z = X_df.values
-        Z_for_topk = (X_df - X_df.mean()).div(X_df.std(ddof=0).replace(0, np.nan)).fillna(0.0)
-    else:
-        mean = X_df.mean()
-        std = X_df.std(ddof=0).replace(0, np.nan)
-        Z_for_topk = (X_df - mean).div(std).fillna(0.0)
-        Z = Z_for_topk.values  # model on scaled features
-
-    # Model params
-    contamination = getattr(args, "contamination", "auto") or "auto"
-    if contamination != "auto":
-        try:
-            contamination = float(contamination)
-        except ValueError:
-            raise ValueError("--contamination must be a float or 'auto'.")
-    n_estimators = int(getattr(args, "n_estimators", 200) or 200)
-    random_state = int(getattr(args, "random_state", 42) or 42)
-    top_k = int(getattr(args, "top_k", 3) or 3)
-
-    # Fit
-    model = IsolationForest(
-        n_estimators=n_estimators,
-        contamination=contamination,
-        random_state=random_state
-    )
-    model.fit(Z)
-
-    # Scores/preds for modeled rows
-    raw = model.score_samples(Z)          # higher = less abnormal
-    score = -raw                          # higher = more abnormal
-    pred = model.predict(Z)               # 1 normal, -1 outlier
-    is_out = (pred == -1)
-
-    # Attach results to a full-length Series aligned to original df
-    score_s = pd.Series(index=df.index, dtype=float)
-    score_s.loc[X_df.index] = score
-    flag_s = pd.Series(False, index=df.index)
-    flag_s.loc[X_df.index] = is_out
-
-    # Top-K features by |z|
-    topk_s = pd.Series(index=df.index, dtype=object)
-    if top_k > 0:
-        for ridx in X_df.index:
-            zrow = Z_for_topk.loc[ridx].abs().sort_values(ascending=False)
-            feats = [f"{c}:{zrow[c]:.2f}" for c in zrow.index[:top_k]]
-            topk_s.loc[ridx] = ";".join(feats)
-
-    # Append columns
-    out = df.copy()
-    out.insert(len(out.columns), "iforest_score", score_s)
-    out.insert(len(out.columns), "iforest_is_outlier", flag_s)
-    out.insert(len(out.columns), "iforest_topk", topk_s)
-
-    # Optionally keep only outliers
-    if getattr(args, "only_outliers", False):
-        out = out[out["iforest_is_outlier"] == True]
-
-
-    # Optionally plot bar charts per outlier
-    # Optionally plot bar charts
-    if getattr(args, "plot_bars", False):
-        import math
-        import matplotlib.pyplot as plt
-
-        # Helper: parse fig size
-        try:
-            bw, bh = map(float, str(getattr(args, "bars_figsize", "12,8")).split(','))
-        except Exception:
-            bw, bh = 12.0, 8.0
-
-        outliers_idx = list(X_df.index[is_out])
-        if len(outliers_idx) == 0:
-            sys.stderr.write("NOTE: No outliers detected; no bar plots generated.\n")
-        else:
-            mode = getattr(args, "bars_mode", "by_feature")
-
-            if mode == "by_sample":
-                # --- existing behavior: one subplot per outlier *sample* (top-K signed z)
-                max_panels = max(1, int(getattr(args, "bars_max_outliers", 12)))
-                panel_ids = outliers_idx[:max_panels]
-
-                n = len(panel_ids)
-                ncols = 3 if n >= 3 else n
-                nrows = int(math.ceil(n / ncols))
-                fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(bw, bh), squeeze=False)
-                axes = axes.ravel()
-
-                # build data & global xlim
-                import numpy as np
-                max_abs = 0.0
-                per_out = {}
-                for ridx in panel_ids:
-                    zrow = Z_for_topk.loc[ridx]
-                    zabs = zrow.abs().sort_values(ascending=False)
-                    feats = list(zabs.index[:top_k])
-                    vals = zrow[feats].values
-                    per_out[ridx] = (feats, vals)
-                    if len(vals):
-                        max_abs = max(max_abs, float(np.max(np.abs(vals))))
-                xlim = 1.2 * (max_abs if max_abs > 0 else 1.0)
-
-                for ax, ridx in zip(axes, panel_ids):
-                    feats, vals = per_out[ridx]
-                    ax.axvline(0, lw=0.8, ls='--', alpha=0.6)
-                    ax.barh(range(len(feats)), vals, align='center')
-                    ax.set_yticks(range(len(feats)))
-                    ax.set_yticklabels(feats, fontsize=7)
-                    label = str(df.loc[ridx, label_col]) if label_col else str(ridx)
-                    score_str = f"{score_s.loc[ridx]:.3f}" if pd.notna(score_s.loc[ridx]) else "NA"
-                    ax.set_title(f"{label} (score {score_str})", fontsize=9)
-                    ax.set_xlim(-xlim, xlim)
-                    ax.grid(True, axis='x', alpha=0.2)
-
-                for ax in axes[len(panel_ids):]:
-                    ax.axis('off')
-
+            with open(args.word_file, 'r', encoding='utf-8') as f:
+                words = [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            raise ValueError(f"Error reading word file '{args.word_file}': {e}")
+        if not words:
+            sys.stderr.write(f"Warning: Word file '{args.word_file}' is empty. No filtering performed.\n")
+            return df, state
+        if args.list_missing_words:
+            if state is None:
+                state = {}
+            if "matched_words" not in state:
+                state["matched_words"] = set()
+        if args.tokenize:
+            tokens = series.str.split('.', n=1).str[0]
+            if args.substring_match:
+                mask = tokens.apply(lambda token: any(word in token for word in words))
+                if args.list_missing_words:
+                    chunk_matches = {w for token in tokens.dropna() for w in words if w in token}
+                    state["matched_words"].update(chunk_matches)
             else:
-                # --- NEW: one subplot per outlier *feature* across all samples
-                # union of top-K features from each outlier sample, ordered by max |z| among outliers
-                import numpy as np
-
-                feat_scores = {}
-                for ridx in outliers_idx:
-                    zrow = Z_for_topk.loc[ridx].abs().sort_values(ascending=False)
-                    for f in zrow.index[:top_k]:
-                        feat_scores[f] = max(feat_scores.get(f, 0.0), float(abs(Z_for_topk.loc[ridx, f])))
-
-                if not feat_scores:
-                    sys.stderr.write("NOTE: No top features found among outliers; no feature panels.\n")
-                else:
-                    ordered_features = [f for f,_ in sorted(feat_scores.items(), key=lambda kv: -kv[1])]
-                    max_panels = max(1, int(getattr(args, "bars_max_outliers", 12)))
-                    features_to_plot = ordered_features[:max_panels]
-
-                    n = len(features_to_plot)
-                    ncols = 3 if n >= 3 else n
-                    nrows = int(math.ceil(n / ncols))
-                    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(bw, bh), squeeze=False)
-                    axes = axes.ravel()
-
-                    # colors
-                    idx_all = list(X_df.index)  # modeled rows
-                    is_out_series = pd.Series(False, index=idx_all)
-                    is_out_series.loc[outliers_idx] = True
-                    col_out = "#d62728"  # red
-                    col_in  = "#bdbdbd"  # gray
-
-                    # x labels density
-                    show_xlabels = len(idx_all) <= 25
-
-                    # consistent y-limits across panels
-                    max_abs = 0.0
-                    for f in features_to_plot:
-                        vals = Z_for_topk[f].loc[idx_all].values  # signed z
-                        if len(vals):
-                            max_abs = max(max_abs, float(np.max(np.abs(vals))))
-                    ylim = 1.2 * (max_abs if max_abs > 0 else 1.0)
-
-                    for ax, f in zip(axes, features_to_plot):
-                        zvals = Z_for_topk[f].loc[idx_all]  # signed z across samples
-                        colors = [col_out if is_out_series.loc[i] else col_in for i in idx_all]
-                        ax.axhline(0, lw=0.8, ls='--', alpha=0.6)
-                        ax.bar(range(len(idx_all)), zvals.values, color=colors)
-                        ax.set_title(f, fontsize=9)
-                        ax.set_ylim(-ylim, ylim)
-                        if show_xlabels:
-                            xt = [str(df.loc[i, label_col]) if label_col else str(i) for i in idx_all]
-                            ax.set_xticks(range(len(idx_all)))
-                            ax.set_xticklabels(xt, rotation=60, ha='right', fontsize=7)
-                        else:
-                            ax.set_xticks([])
-                        ax.grid(True, axis='y', alpha=0.2)
-
-                    for ax in axes[len(features_to_plot):]:
-                        ax.axis('off')
-
-                    # simple legend
-                    from matplotlib.lines import Line2D
-                    handles = [Line2D([0],[0], color=col_out, lw=6, label="Outlier samples"),
-                               Line2D([0],[0], color=col_in,  lw=6, label="Non-outliers")]
-                    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, fontsize='small')
-
-            out_path = getattr(args, "bars_output", None) or "iforest_bars.pdf"
-            ext = os.path.splitext(out_path)[1].lower().lstrip(".") or "pdf"
-            fig.tight_layout()
-            fig.savefig(out_path, format=ext, bbox_inches='tight', dpi=300)
-            plt.close(fig)
-    return out
-
-#--
-
-def _handle_heatmap(df, args, input_sep, is_header_present, row_idx_col_name):
-    """
-    Heatmap of samples (rows) x features (columns) with optional dendrograms and sample annotations.
-    If --corr is given, a feature-feature Spearman correlation heatmap is shown instead.
-    """
-    import sys, os
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
-
-    # Figure size
-    try:
-        if ',' in args.figure_size:
-            w, h = map(float, args.figure_size.split(','))
-        elif 'x' in args.figure_size.lower():
-            w, h = map(float, args.figure_size.lower().split('x'))
+                mask = tokens.isin(words)
+                if args.list_missing_words:
+                    state["matched_words"].update(set(tokens.dropna().unique()).intersection(words))
         else:
-            w = h = float(args.figure_size)
-    except Exception:
-        sys.stderr.write("Error: --figure_size must be like '8,6' or '8x6'.\n")
-        sys.exit(1)
+            if args.substring_match:
+                pattern = "(" + "|".join(map(re.escape, words)) + ")"
+            else:
+                pattern = r"\b(?:" + "|".join(map(re.escape, words)) + r")\b"
+            mask = series.str.contains(pattern, regex=True, na=False)
+            if args.list_missing_words:
+                chunk_matches = set()
+                try:
+                    for text in series.dropna():
+                        found = re.findall(pattern, text)
+                        chunk_matches.update(found)
+                except re.error as e:
+                    raise ValueError(f"Error processing regex pattern '{pattern}': {e}")
+                state["matched_words"].update(chunk_matches)
+        df = df[~mask] if args.invert else df[mask]
+    elif args.pattern:
+        try:
+            mask = series.str.contains(args.pattern, regex=True, na=False)
+        except re.error as e:
+            raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
+        df = df[~mask] if args.invert else df[mask]
+    elif args.starts_with:
+        mask = series.str.startswith(args.starts_with, na=False)
+        df = df[~mask] if args.invert else df[mask]
+    elif args.ends_with:
+        mask = series.str.endswith(args.ends_with, na=False)
+        df = df[~mask] if args.invert else df[mask]
+    return df, state
 
-    # --index is required
-    if not getattr(args, "index", None):
-        sys.stderr.write("Error: --index is required for 'heatmap'.\n")
-        sys.exit(1)
-    idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
-    label_col = df.columns[idx]
+# Table operations --------------------------------------------
 
-    # Ensure the dataframe index is the sample label so row ticklabels are sample names
-    df = df.copy()
-    df[label_col] = df[label_col].astype(str)
-    df.set_index(label_col, inplace=True, drop=False)
-
-    # Annotations (optional)
-    row_ann_cols = []
-    if getattr(args, "row_annotations", None):
-        row_ann_cols = [c.strip() for c in args.row_annotations.split(',') if c.strip()]
-
-    corr_mode = bool(getattr(args, "corr", False))
-
-    # numeric slice (exclude label + annotations)
-    exclude = [label_col] + row_ann_cols
-    numeric_df, numeric_columns = _helper_extract_numeric_columns(df, exclude_cols=exclude)
-
-    if corr_mode:
-        if not numeric_columns:
-            raise ValueError("No numeric columns found for correlation heatmap.")
-        data_to_plot = _corr_from_df(numeric_df)                 # feature-feature corr
-        row_colors_df = None                                     # not used in corr mode
-        center = 0.0
-        cmap = getattr(args, "cmap", None) or "bwr_r"            # red=neg, blue=pos
+def _handle_sort_table(df, args, input_sep, is_header_present, row_idx_col_name):
+    cols = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "column (--column)")
+    if len(cols) != 1:
+        raise ValueError("Error: Sort operation requires a single column specified by --column.")
+    target = df.columns[cols[0]]
+    if args.expand_scientific and not args.pattern:
+        args.pattern = r"(\d+(?:\.\d+)?)([KMGTP])?"
+    elif not args.pattern:
+        args.pattern = r"(\d+)"
+    if args.expand_scientific:
+        suffix_map = {'K': 1000, 'M': 1000000, 'G': 1000000000, 'T': 1000000000000, 'P': 1000000000000000}
+    elif args.suffix_map:
+        suffix_map = {}
+        for pair in args.suffix_map.split(','):
+            if ':' in pair:
+                key, val = pair.split(':', 1)
+                try:
+                    suffix_map[key.strip().upper()] = float(val.strip())
+                except ValueError:
+                    raise ValueError(f"Error: Invalid suffix-map entry '{pair}'.")
+            else:
+                raise ValueError(f"Error: Suffix-map entry '{pair}' is malformed. Expected KEY:VALUE.")
     else:
-        if not numeric_columns:
-            raise ValueError("No numeric columns found for heatmap.")
-        M = numeric_df.copy()
+        suffix_map = {}
+    _print_verbose(args, f"Sorting column '{target}' using pattern '{args.pattern}' with suffix map {suffix_map}.")
+    temp_numeric = f"_temp_numeric_sort_{target}"
+    def debug_conversion(val):
+        original_val = str(val)
+        cleaned_val = original_val.strip()
+        numeric_val = extract_numeric(cleaned_val, args.pattern, suffix_map)
+        _print_verbose(args, f"DEBUG: Original '{original_val}' => Cleaned '{cleaned_val}' => Numeric {numeric_val}")
+        return numeric_val
+    df[temp_numeric] = df[target].astype(str).apply(debug_conversion)
+    sort_keys = [temp_numeric]
+    if args.pattern_string:
+        temp_secondary = f"_temp_string_sort_{target}"
+        def extract_secondary(val):
+            m = re.search(args.pattern_string, val)
+            return m.group(1) if m else val
+        df[temp_secondary] = df[target].astype(str).apply(extract_secondary)
+        sort_keys.append(temp_secondary)
+    sort_keys.append(target)
+    ascending = not args.desc
+    df = df.sort_values(by=sort_keys, ascending=ascending, kind='stable')
+    drop_cols = [temp_numeric]
+    if args.pattern_string:
+        drop_cols.append(temp_secondary)
+    df.drop(columns=drop_cols, inplace=True)
+    return df
 
-        # z-score per column (optional)
-        if getattr(args, "zscore", False):
-            mu = M.mean(axis=0)
-            sigma = M.std(axis=0, ddof=0).replace(0, np.nan)
-            M = (M - mu).div(sigma)
-            center = 0.0
-            cmap = getattr(args, "cmap", None) or "bwr_r"        # red=neg, blue=pos
-        else:
-            center = None
-            cmap = getattr(args, "cmap", None) or "viridis"
+def _handle_cleanup_table_header(df, args, input_sep, is_header_present, row_idx_col_name):
+    if not is_header_present:
+        sys.stderr.write("Warning: '--noheader' provided. 'cleanup_header' will have no effect.\n")
+        _print_verbose(args, "Skipping cleanup_header (no header).")
+    else:
+        original = list(df.columns)
+        df.columns = [_clean_string_for_header_and_data(col) for col in df.columns]
+        _print_verbose(args, f"Cleaned header. Before: {original}  After: {list(df.columns)}")
+    return df
 
-        # drop all-NA (constant) features after scaling
-        all_na_cols = [c for c in M.columns if M[c].isna().all()]
-        if all_na_cols:
-            sys.stderr.write("Warning: Dropping constant/non-informative feature(s): "
-                             + ", ".join(all_na_cols) + "\n")
-            M = M.drop(columns=all_na_cols)
-            numeric_columns = [c for c in numeric_columns if c not in all_na_cols]
-
-        # build row annotation color matrix (aligned to M)
-        row_colors_df = None
-        if row_ann_cols:
-            ann = df.loc[M.index, row_ann_cols]
-            row_colors_df = pd.DataFrame(index=ann.index)
-            for col in row_ann_cols:
-                s = ann[col].astype('string')  # keeps <NA>
-                cats = pd.Categorical(s).categories
-                pal = sns.color_palette(None, n_colors=max(3, len(cats)))
-                color_map = {cat: pal[i % len(pal)] for i, cat in enumerate(cats)}
-                # Map with default tuple (avoid Series.fillna(tuple) error)
-                row_colors_df[col] = s.map(lambda k: color_map.get(k, (0.8, 0.8, 0.8)))
-
-        data_to_plot = M
-
-    if data_to_plot.empty:
-        sys.stderr.write("Error: Nothing to plot (empty matrix).\n")
-        sys.exit(1)
-
-    # clustering options
-    cluster_rows = not getattr(args, "no_row_dendro", False)
-    cluster_cols = not getattr(args, "no_col_dendro", False)
-    if getattr(args, "no_cluster", False):
-        cluster_rows = False
-        cluster_cols = False
-
-    linkage_method = getattr(args, "linkage", "average")
-    distance_kind = getattr(args, "distance", "1-corr")  # '1-corr' or 'euclidean'
-    if linkage_method == "ward" and distance_kind != "euclidean":
-        sys.stderr.write("Warning: 'ward' linkage requires Euclidean distances; switching distance=euclidean.\n")
-        distance_kind = "euclidean"
-
-    # Linkages (robust, all finite)
-    row_linkage = col_linkage = None
-    if cluster_cols:
-        if distance_kind == "1-corr":
-            cmat = data_to_plot if corr_mode else _corr_from_df(data_to_plot)
-            col_linkage = _link_from_corr(cmat, method=linkage_method)
-        else:
-            Z = data_to_plot.fillna(0.0)
-            col_linkage = linkage(np.nan_to_num(pdist(Z.T, 'euclidean')), method=linkage_method)
-
-    if cluster_rows:
-        if distance_kind == "1-corr":
-            cmat = data_to_plot if corr_mode else _corr_from_df(data_to_plot.T)
-            row_linkage = _link_from_corr(cmat, method=linkage_method)
-        else:
-            Z = data_to_plot.fillna(0.0)
-            row_linkage = linkage(np.nan_to_num(pdist(Z, 'euclidean')), method=linkage_method)
-
-    # Colorbar placement and right padding
-    cbar_pos = (.02, .8, .04, .18) if getattr(args, "cbar_left", False) else None
-    right_pad = float(getattr(args, "right_pad", 0.84))
-
-    # Decide whether to draw tick labels (avoid slow text drawing)
-    max_labels = int(getattr(args, "max_labels", 200))
-    xticks_on = data_to_plot.shape[1] <= max_labels
-    yticks_on = data_to_plot.shape[0] <= max_labels
-
-    plot_df = data_to_plot.copy()
-    plot_mask = plot_df.isna()
-    plot_df = plot_df.fillna(0.0)
-
-    g = sns.clustermap(
-        plot_df,
-        row_linkage=row_linkage,
-        col_linkage=col_linkage,
-        row_colors=row_colors_df if (row_colors_df is not None and not corr_mode) else None,
-        cmap=cmap,
-        center=center,
-        xticklabels=xticks_on,
-        yticklabels=yticks_on,
-        cbar_pos=cbar_pos,
-        figsize=(w, h),
-        linewidths=getattr(args, "grid_linewidth", 0.0),
-    )
-
-    ax = g.ax_heatmap
-    ax.set_xlabel(""); ax.set_ylabel("")
-    if xticks_on:
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=90, ha='center',
-                           fontsize=getattr(args, "xtick_fontsize", 8))
-    if yticks_on:
-        ax.set_yticklabels(ax.get_yticklabels(), fontsize=getattr(args, "ytick_fontsize", 7))
-
-    # annotation legends on the right
-    if row_ann_cols and not corr_mode and getattr(args, "annot_legend", True):
-        legend_ax = g.fig.add_axes([right_pad, 0.15, 0.15, 0.7])  # x,y,w,h
-        legend_ax.axis("off")
-        y0, dy = 0.95, 0.08
-        # reorder annotations to plotting order
-        ordered_rows = g.dendrogram_row.reordered_ind if cluster_rows else list(range(plot_df.shape[0]))
-        ann_df = df.loc[plot_df.index[ordered_rows], row_ann_cols]
-
-        for j, col in enumerate(row_ann_cols):
-            s = ann_df[col].astype('string')
-            cats = pd.Categorical(s).categories.tolist()  # excludes NA
-            pal = sns.color_palette(None, n_colors=max(3, len(cats)))
-            cm = {cat: pal[i % len(pal)] for i, cat in enumerate(cats)}
-            patches = [Patch(facecolor=cm[c], edgecolor='none', label=str(c)) for c in cats]
-            # If we had any NA, show it explicitly
-            if s.isna().any():
-                patches.append(Patch(facecolor=(0.8,0.8,0.8), edgecolor='none', label="NA"))
-            legend_ax.legend(handles=patches, title=col, loc='upper left',
-                             bbox_to_anchor=(0.0, y0 - j*dy), frameon=False,
-                             fontsize=8, title_fontsize=9)
-
-    # write values on tiles (optional)
-    if getattr(args, "show_values", False):
-        rows = g.dendrogram_row.reordered_ind if cluster_rows else slice(None)
-        cols = g.dendrogram_col.reordered_ind if cluster_cols else slice(None)
-        data_reordered = plot_df.iloc[rows, cols]
-        mask_reordered = plot_mask.iloc[rows, cols]
-        ny, nx = data_reordered.shape
-        for yi in range(ny):
-            for xi in range(nx):
-                if mask_reordered.iat[yi, xi]:
-                    continue
-                val = data_reordered.iat[yi, xi]
-                ax.text(xi + 0.5, yi + 0.5, f"{val:{getattr(args, 'values_fmt', '.2f')}}",
-                        ha='center', va='center', fontsize=getattr(args, "values_fontsize", 6))
-
-    g.fig.subplots_adjust(right=right_pad)
-    ext = os.path.splitext(args.output)[1].lower().lstrip(".") or "pdf"
-    g.fig.savefig(args.output, format=ext, bbox_inches='tight', dpi=300)
-    plt.close(g.fig)
+def _handle_stats_table(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
+    counter = Counter() if state is None else state
+    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
+    if not indices:
+        raise ValueError("Error: No columns specified for value_counts.")
+    for i in indices:
+        col = df.columns[i]
+        counter.update(df[col].dropna().astype(str))
+    sorted_counts = sorted(counter.items(), key=lambda x: x[1], reverse=True)
+    summary = pd.DataFrame(sorted_counts[:args.top_n], columns=['Value', 'Count'])
+    sys.stdout.write(f"--- Top {args.top_n} Values ---\n")
+    sys.stdout.write(summary.to_string(index=False, header=True) + '\n')
     sys.exit(0)
 
-#--
+def _handle_view_table(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
+    import sys
+    import pandas as pd
 
-def _handle_filter_columns(df, args, input_sep, is_header_present, row_idx_col_name):
-    index_col_name = None
-    if hasattr(args, "index") and args.index:
-        index_idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
-        index_col_name = df.columns[index_idx]
+    _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
+    pd.set_option('display.max_rows', args.max_rows)
+    pd.set_option('display.max_columns', args.max_cols)
+    pd.set_option('display.width', None)
+    pd.set_option('display.colheader_justify', 'left')
     
-    keep_columns = []
-    if hasattr(args, "keep_columns") and args.keep_columns:
-        keep_columns = [col.strip() for col in args.keep_columns.split(",") if col.strip()]
+    disp = df.copy()
+    if getattr(args, "cleanup_numbers", False):
+         disp = _format_numeric_columns(disp)
     
-    cols_to_filter = []
-    for col in df.columns:
-        if index_col_name is not None and col == index_col_name:
-            continue
-        if col in keep_columns:
-            continue
-        series = df[col].dropna()
-        match = False
-        if args.is_numeric:
-            numeric_series = pd.to_numeric(series, errors='coerce')
-            if not series.empty and numeric_series.notna().all():
-                match = True
-        if args.is_integer:
-            numeric_series = pd.to_numeric(series, errors='coerce')
-            if (not series.empty and numeric_series.notna().all() and
-                numeric_series.apply(lambda x: abs(x - round(x)) < 1e-8).all()):
-                match = True
-        if args.is_same:
-            numeric_series = pd.to_numeric(series, errors='coerce')
-            if (not series.empty and numeric_series.notna().all() and numeric_series.nunique() == 1):
-                match = True
-        if args.min_value is not None:
-            numeric_series = pd.to_numeric(series, errors='coerce')
-            if (not series.empty and numeric_series.notna().all() and (numeric_series >= args.min_value).all()):
-                match = True
-        if args.max_value is not None:
-            numeric_series = pd.to_numeric(series, errors='coerce')
-            if (not series.empty and numeric_series.notna().all() and (numeric_series <= args.max_value).all()):
-                match = True
-        if match:
-            cols_to_filter.append(col)
+    if row_idx_col_name and row_idx_col_name in disp.columns:
+        cols = [row_idx_col_name] + [col for col in disp.columns if col != row_idx_col_name]
+        disp = disp[cols]
+        _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
     
-    if args.invert:
-        cols_to_keep = cols_to_filter[:]
-        if index_col_name is not None and index_col_name not in cols_to_keep:
-            cols_to_keep.append(index_col_name)
-        for k in keep_columns:
-            if k not in cols_to_keep and k in df.columns:
-                cols_to_keep.append(k)
-        filtered_df = df.loc[:, cols_to_keep]
+    if getattr(args, "pretty_print", True):
+         sys.stdout.write(disp.to_string(index=True, header=is_header_present) + '\n')
     else:
-        filtered_df = df.drop(columns=cols_to_filter)
+         disp.to_csv(
+             sys.stdout,
+             sep=input_sep,
+             index=False,
+             header=is_header_present,
+             encoding='utf-8',
+             quoting=csv.QUOTE_NONE,
+             escapechar='\\'
+         )
     
-    if index_col_name is not None:
-        final_order = [index_col_name]
-    else:
-        final_order = []
-    for k in keep_columns:
-        if k in filtered_df.columns and k not in final_order:
-            final_order.append(k)
-    for col in filtered_df.columns:
-        if col not in final_order:
-            final_order.append(col)
+    pd.reset_option('display.max_rows')
+    pd.reset_option('display.max_columns')
+    pd.reset_option('display.width')
+    pd.reset_option('display.colheader_justify')
     
-    filtered_df = filtered_df.reindex(columns=final_order)
-    
-    if index_col_name is not None:
-        filtered_df = filtered_df.set_index(index_col_name, drop=False)
-    return filtered_df
+    sys.exit(0)
 
-def _handle_aggregate(df, args, input_sep, is_header_present, row_idx_col_name):
+def _handle_select_table(df, args, input_sep, is_header_present, row_idx_col_name):
+    if args.list:
+        if not is_header_present:
+            raise ValueError("Error: File has no header (--noheader option was provided)")
+        if not args.pattern:
+            raise ValueError("Error: When using --list, you must provide a comma-separated list of column names or a file with column names.")
+        if os.path.exists(args.pattern):
+            with open(args.pattern, "r", encoding="utf-8") as f:
+                col_list = [line.strip() for line in f if line.strip()]
+        else:
+            col_list = [x.strip() for x in args.pattern.split(',') if x.strip()]
+        missing = [col for col in col_list if col not in df.columns]
+        if missing:
+            raise ValueError(f"Error: Columns not found: {missing}. Available columns: {list(df.columns)}")
+        _print_verbose(args, f"Columns selected: {col_list}.")
+        df = df[col_list]
+        return df
+    else:
+        if not args.pattern:
+            raise ValueError("Error: A pattern must be provided (either as a positional argument or with -p/--pattern) when not using --list mode.")
+        pattern = args.pattern
+        _print_verbose(args, f"Selecting columns matching pattern '{pattern}' (regex: {args.regex}).")
+        selected = []
+        for col in df.columns:
+            if args.regex:
+                try:
+                    if re.search(pattern, str(col)):
+                        selected.append(col)
+                except re.error as e:
+                    raise ValueError(f"Error: Invalid regex '{pattern}': {e}")
+            else:
+                if pattern in str(col):
+                    selected.append(col)
+        if row_idx_col_name and row_idx_col_name in df.columns and row_idx_col_name not in selected:
+            selected = [row_idx_col_name] + selected
+            _print_verbose(args, f"Including row-index column '{row_idx_col_name}' in the output.")
+        if not selected:
+            sys.stderr.write(f"Warning: No columns matched pattern '{pattern}'. Output will be empty.\n")
+            df = pd.DataFrame(columns=[])
+        else:
+            df = df[selected]
+            _print_verbose(args, f"Columns selected: {selected}.")
+        return df
+
+def _handle_headers_table(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line):
+    import sys
+
+    _print_verbose(args, "Displaying header names with first data row.")
+
+    if is_header_present:
+        headers = list(df.columns)
+        if not df.empty:
+            first_data_row = [str(x) for x in df.iloc[0].tolist()]
+        else:
+            first_data_row = [""] * len(headers)
+    else:
+        headers = raw_first_line if raw_first_line else []
+        if not df.empty:
+            first_data_row = [str(x) for x in df.iloc[0].tolist()]
+        else:
+            first_data_row = [""] * len(headers)
+
+    if not headers:
+        sys.stderr.write("No valid header found.\n")
+        sys.exit(1)
+    if not first_data_row:
+        sys.stderr.write("No valid data row found.\n")
+        sys.exit(1)
+
+    max_header_len = max(len(header.strip()) for header in headers)
+    max_value_len = 0
+    for entry in first_data_row:
+        entry = entry.strip()
+        display_entry = (entry[:40] + '...[truncated]') if len(entry) > 40 else entry
+        max_value_len = max(max_value_len, len(display_entry))
+
+    header_idx_len = len(str(len(headers)))
+    header_format = f"{{:<{header_idx_len}}} | {{:>{max_header_len}}} | {{:<{max_value_len}}}"
+    sep_line = "-" * (header_idx_len + 1) + "+" + "-" * (max_header_len + 2) + "+" + "-" * (max_value_len + 2)
+
+    print(sep_line)
+    for i, (header, entry) in enumerate(zip(headers, first_data_row)):
+        header = header.strip()
+        entry = entry.strip()
+        display_entry = (entry[:40] + '...[truncated]') if len(entry) > 40 else entry
+        print(header_format.format(i + 1, header, display_entry))
+    print(sep_line)
+
+    sys.exit(0)
+
+def _handle_transpose_table(df, args, input_sep, is_header_present, row_idx_col_name):
+    if is_header_present:
+        header_row = list(df.columns)
+        df = pd.concat([pd.DataFrame([header_row], columns=df.columns), df], ignore_index=True)
+    if df.shape[1] < 2:
+        sys.stderr.write("Error: Input table must have at least 2 columns for transpose operation (first column will be used as header).\n")
+        sys.exit(1)
+    new_headers = df.iloc[:, 0].tolist()
+    data_to_transpose = df.iloc[:, 1:]
+    transposed_df = data_to_transpose.T
+    transposed_df.columns = new_headers
+    return transposed_df
+
+def _handle_melt_table(df, args, input_sep, is_header_present, row_idx_col_name):
+    id_vars = [col.strip() for col in args.id_vars.split(',')]
+    if args.value_vars:
+        value_vars = [col.strip() for col in args.value_vars.split(',')]
+    else:
+        value_vars = [col for col in df.columns if col not in id_vars]
+    return pd.melt(df, id_vars=id_vars, value_vars=value_vars,
+                   var_name=args.var_name, value_name=args.value_name)
+
+def _handle_pivot_table(df, args, input_sep, is_header_present, row_idx_col_name):
+    try:
+        unmelted_df = df.pivot(index=args.index, columns=args.columns, values=args.value)
+        unmelted_df = unmelted_df.reset_index()
+        unmelted_df.columns = [col if not isinstance(col, tuple) else '_'.join(map(str, col)).strip('_')
+                                for col in unmelted_df.columns.values]
+    except Exception as e:
+        sys.stderr.write(f"Error in unmelt operation: {e}\n")
+        sys.exit(1)
+    return unmelted_df
+
+def _handle_aggregate_table(df, args, input_sep, is_header_present, row_idx_col_name):
     import sys
     import pandas as pd
     from scipy.stats import entropy as calculate_entropy
@@ -1610,7 +1358,7 @@ def _handle_aggregate(df, args, input_sep, is_header_present, row_idx_col_name):
         if agg_func in ["sum", "mean"]:
             valid_agg_cols = []
             for col in agg_cols:
-                series_numeric = pd.to_numeric(df[col], errors="coerce")
+                series_numeric = pd.to_numeric(df[col], errors='coerce')
                 if series_numeric.notna().sum() > 0:
                     valid_agg_cols.append(col)
                 else:
@@ -1620,7 +1368,7 @@ def _handle_aggregate(df, args, input_sep, is_header_present, row_idx_col_name):
                 sys.stderr.write("Error: No numeric columns found for aggregation.\n")
                 sys.exit(1)
             for col in valid_agg_cols:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+                df[col] = pd.to_numeric(df[col], errors='coerce')
             grouped = df.groupby(group_cols)
             summary_df = grouped[valid_agg_cols].agg(agg_func).reset_index()
             rename_dict = {col: f"{agg_func}_{col}" for col in valid_agg_cols}
@@ -1674,539 +1422,317 @@ def _handle_aggregate(df, args, input_sep, is_header_present, row_idx_col_name):
             sys.stderr.write(f"Error: Unsupported aggregation function '{agg_func}'.\n")
             sys.exit(1)
 
-def _handle_transpose(df, args, input_sep, is_header_present, row_idx_col_name):
-    if is_header_present:
-        header_row = list(df.columns)
-        df = pd.concat([pd.DataFrame([header_row], columns=df.columns), df], ignore_index=True)
-    if df.shape[1] < 2:
-        sys.stderr.write("Error: Input table must have at least 2 columns for transpose operation (first column will be used as header).\n")
-        sys.exit(1)
-    new_headers = df.iloc[:, 0].tolist()
-    data_to_transpose = df.iloc[:, 1:]
-    transposed_df = data_to_transpose.T
-    transposed_df.columns = new_headers
-    return transposed_df
-
-def _handle_move(df, args, input_sep, is_header_present, row_idx_col_name):
-    from_idx = _parse_column_arg(args.column, df.columns, is_header_present, "source column (--column)")
-    to_idx = _parse_column_arg(args.dest_column, df.columns, is_header_present, "destination column (--dest_column)")
-    if to_idx > df.shape[1]:
-        to_idx = df.shape[1]
-    _print_verbose(args, f"Moving column '{df.columns[from_idx]}' from index {from_idx} to {to_idx}.")
-    col_name = df.columns[from_idx]
-    data = df.pop(col_name)
-    df.insert(to_idx, col_name, data)
-    return df
-
-def _handle_col_insert(df, args, input_sep, is_header_present, row_idx_col_name):
-    pos = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
-    value = codecs.decode(args.value, 'unicode_escape')
-    new_header = args.new_header
-    if is_header_present and new_header in df.columns:
-        new_header = get_unique_header(new_header, df)
-        _print_verbose(args, f"New header exists; using '{new_header}'.")
-    df.insert(pos, new_header, value)
-    return df
-
-def _handle_col_drop(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
-    names = [df.columns[i] for i in indices]
-    _print_verbose(args, f"Dropping columns: {names}.")
-    df = df.drop(columns=names)
-    return df
-
-def _handle_grep(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
-    series = df.iloc[:, col].astype(str)
-    if args.word_file:
-        try:
-            with open(args.word_file, 'r', encoding='utf-8') as f:
-                words = [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            raise ValueError(f"Error reading word file '{args.word_file}': {e}")
-        if not words:
-            sys.stderr.write(f"Warning: Word file '{args.word_file}' is empty. No filtering performed.\n")
-            return df, state
-        if args.list_missing_words:
-            if state is None:
-                state = {}
-            if "matched_words" not in state:
-                state["matched_words"] = set()
-        if args.tokenize:
-            tokens = series.str.split('.', n=1).str[0]
-            if args.substring_match:
-                mask = tokens.apply(lambda token: any(word in token for word in words))
-                if args.list_missing_words:
-                    chunk_matches = {w for token in tokens.dropna() for w in words if w in token}
-                    state["matched_words"].update(chunk_matches)
-            else:
-                mask = tokens.isin(words)
-                if args.list_missing_words:
-                    state["matched_words"].update(set(tokens.dropna().unique()).intersection(words))
-        else:
-            if args.substring_match:
-                pattern = "(" + "|".join(map(re.escape, words)) + ")"
-            else:
-                pattern = r"\b(?:" + "|".join(map(re.escape, words)) + r")\b"
-            mask = series.str.contains(pattern, regex=True, na=False)
-            if args.list_missing_words:
-                chunk_matches = set()
-                try:
-                    for text in series.dropna():
-                        found = re.findall(pattern, text)
-                        chunk_matches.update(found)
-                except re.error as e:
-                    raise ValueError(f"Error processing regex pattern '{pattern}': {e}")
-                state["matched_words"].update(chunk_matches)
-        df = df[~mask] if args.invert else df[mask]
-    elif args.pattern:
-        try:
-            mask = series.str.contains(args.pattern, regex=True, na=False)
-        except re.error as e:
-            raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
-        df = df[~mask] if args.invert else df[mask]
-    elif args.starts_with:
-        mask = series.str.startswith(args.starts_with, na=False)
-        df = df[~mask] if args.invert else df[mask]
-    elif args.ends_with:
-        mask = series.str.endswith(args.ends_with, na=False)
-        df = df[~mask] if args.invert else df[mask]
-    return df, state
-
-def _handle_split(df, args, input_sep, is_header_present, row_idx_col_name):
-    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
-    delim = codecs.decode(args.delimiter, 'unicode_escape')
-    original = df.columns[col]
-    _print_verbose(args, f"Splitting column '{original}' with delimiter {delim!r}.")
-    split_df = df.iloc[:, col].astype(str).str.split(delim, expand=True).fillna('')
-    new_headers = []
-    for i in range(split_df.shape[1]):
-        candidate = f"{original}_{args.new_header_prefix}_{i+1}"
-        new_headers.append(get_unique_header(candidate, df) if is_header_present else f"{args.new_header_prefix}_{i+1}")
-    split_df.columns = new_headers
-    _print_verbose(args, f"New split headers: {new_headers}.")
-    df = df.drop(columns=[original])
-    left = df.iloc[:, :col]
-    right = df.iloc[:, col:]
-    df = pd.concat([left, split_df, right], axis=1)
-    return df
-
-def _handle_join(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
-    if not indices:
-        raise ValueError("Error: No columns specified for join operation.")
-    delim = codecs.decode(args.delimiter, 'unicode_escape')
-    names = [df.columns[i] for i in indices]
-    _print_verbose(args, f"Joining columns {names} with delimiter {delim!r}.")
-    joined = df.iloc[:, indices[0]].astype(str)
-    for i in range(1, len(indices)):
-        joined += delim + df.iloc[:, indices[i]].astype(str)
-    if args.target_column:
-        target = _parse_column_arg(args.target_column, df.columns, is_header_present, "target column (--target_column)")
-    else:
-        target = indices[0]
-    new_header = args.new_header
-    if is_header_present:
-        new_header = get_unique_header(new_header, df)
-    # compute how many dropped columns lie before the target position
-    before_target = sum(1 for i in indices if i < target)
-    drop_names = [df.columns[i] for i in sorted(indices, reverse=True)]
-    df = df.drop(columns=drop_names)
-    pos = min(max(target - before_target, 0), df.shape[1])
-    df.insert(pos, new_header, joined.reset_index(drop=True))
-    _print_verbose(args, f"Inserted joined column '{new_header}' at index {pos}.")
-    return df
-
-def _handle_tr(df, args, input_sep, is_header_present, row_idx_col_name):
-    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
-    original = df.columns[col]
-    translated = None
-    if args.dict_file:
-        mapping = {}
-        try:
-            _print_verbose(args, f"Loading translation mapping from '{args.dict_file}' using separator {input_sep!r}.")
-            with open(args.dict_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    parts = line.split(input_sep, 1)
-                    if len(parts) == 2:
-                        mapping[parts[0]] = parts[1]
-                    else:
-                        sys.stderr.write(f"Warning: Skipping malformed line: '{line}'.\n")
-            _print_verbose(args, f"Loaded {len(mapping)} translations.")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Error: Dictionary file not found: '{args.dict_file}'")
-        except Exception as e:
-            raise RuntimeError(f"Error reading dictionary file: {e}")
-        translated = df.iloc[:, col].astype(str).apply(lambda x: mapping.get(x, x))
-    elif args.from_val:
-        if not args.to_val:
-            raise ValueError("Error: Must specify --to_val when using --from_val.")
-        from_val = codecs.decode(args.from_val, 'unicode_escape')
-        to_val = codecs.decode(args.to_val, 'unicode_escape')
-        _print_verbose(args, f"Translating values in '{original}' from '{from_val}' to '{to_val}' ({'regex' if args.regex else 'literal'}).")
-        try:
-            translated = df.iloc[:, col].astype(str).str.replace(from_val, to_val, regex=args.regex)
-        except re.error as e:
-            raise ValueError(f"Error: Invalid regex '{from_val}': {e}")
-    else:
-        raise ValueError("Error: For replace operation, specify either a dict file (--dict_file) or both --from_val and --to_val.")
-    if args.in_place:
-        df.iloc[:, col] = translated
-    else:
-        if args.new_header.startswith("_"):
-            new_header = str(original) + args.new_header
-        else:
-            new_header = args.new_header
-        if is_header_present:
-            new_header = get_unique_header(new_header, df)
-        df.insert(col+1, new_header, translated.reset_index(drop=True))
-        _print_verbose(args, f"Inserted translated column '{new_header}' after '{original}'.")
-    return df
-
-def extract_numeric(value, pattern, suffix_map=None):
-    if not isinstance(value, str):
-        return None
-    m = re.search(pattern, value)
-    if m:
-        if suffix_map:
-            return _parse_size_value(m.group(0), suffix_map)
-        try:
-            return float(m.group(1))
-        except ValueError:
-            return None
-    return None
-
-def _parse_size_value(value, suffix_map):
-    m = re.match(r"(\d+(?:\.\d+)?)([KMGTP])?", value, re.IGNORECASE)
-    if not m:
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    num = float(m.group(1))
-    suffix = m.group(2)
-    if suffix:
-        key = suffix.upper()
-        if key in suffix_map:
-            return num * suffix_map[key]
-        else:
-            return None
-    return num
-
-def _handle_sort(df, args, input_sep, is_header_present, row_idx_col_name):
-    cols = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "column (--column)")
-    if len(cols) != 1:
-        raise ValueError("Error: Sort operation requires a single column specified by --column.")
-    target = df.columns[cols[0]]
-    if args.expand_scientific and not args.pattern:
-        args.pattern = r"(\d+(?:\.\d+)?)([KMGTP])?"
-    elif not args.pattern:
-        args.pattern = r"(\d+)"
-    if args.expand_scientific:
-        suffix_map = {'K': 1000, 'M': 1000000, 'G': 1000000000, 'T': 1000000000000, 'P': 1000000000000000}
-    elif args.suffix_map:
-        suffix_map = {}
-        for pair in args.suffix_map.split(','):
-            if ':' in pair:
-                key, val = pair.split(':', 1)
-                try:
-                    suffix_map[key.strip().upper()] = float(val.strip())
-                except ValueError:
-                    raise ValueError(f"Error: Invalid suffix-map entry '{pair}'.")
-            else:
-                raise ValueError(f"Error: Suffix-map entry '{pair}' is malformed. Expected KEY:VALUE.")
-    else:
-        suffix_map = {}
-    _print_verbose(args, f"Sorting column '{target}' using pattern '{args.pattern}' with suffix map {suffix_map}.")
-    temp_numeric = f"_temp_numeric_sort_{target}"
-    def debug_conversion(val):
-        original_val = str(val)
-        cleaned_val = original_val.strip()
-        numeric_val = extract_numeric(cleaned_val, args.pattern, suffix_map)
-        _print_verbose(args, f"DEBUG: Original '{original_val}' => Cleaned '{cleaned_val}' => Numeric {numeric_val}")
-        return numeric_val
-    df[temp_numeric] = df[target].astype(str).apply(debug_conversion)
-    sort_keys = [temp_numeric]
-    if args.pattern_string:
-        temp_secondary = f"_temp_string_sort_{target}"
-        def extract_secondary(val):
-            m = re.search(args.pattern_string, val)
-            return m.group(1) if m else val
-        df[temp_secondary] = df[target].astype(str).apply(extract_secondary)
-        sort_keys.append(temp_secondary)
-    sort_keys.append(target)
-    ascending = not args.desc
-    df = df.sort_values(by=sort_keys, ascending=ascending, kind='stable')
-    drop_cols = [temp_numeric]
-    if args.pattern_string:
-        drop_cols.append(temp_secondary)
-    df.drop(columns=drop_cols, inplace=True)
-    return df
-
-def _handle_cleanup_header(df, args, input_sep, is_header_present, row_idx_col_name):
-    if not is_header_present:
-        sys.stderr.write("Warning: '--noheader' provided. 'cleanup_header' will have no effect.\n")
-        _print_verbose(args, "Skipping cleanup_header (no header).")
-    else:
-        original = list(df.columns)
-        df.columns = [_clean_string_for_header_and_data(col) for col in df.columns]
-        _print_verbose(args, f"Cleaned header. Before: {original}  After: {list(df.columns)}")
-    return df
-
-def _handle_cleanup_values(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
-    names = [df.columns[i] for i in indices]
-    _print_verbose(args, f"Cleaning values in columns: {names}.")
-    for i in indices:
-        df.iloc[:, i] = df.iloc[:, i].apply(_clean_string_for_header_and_data)
-    return df
-
-def _handle_prefix_add(df, args, input_sep, is_header_present, row_idx_col_name):
-    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
-    prefix = codecs.decode(args.string, 'unicode_escape')
-    delim = codecs.decode(args.delimiter, 'unicode_escape')
-    names = [df.columns[i] for i in indices]
-    _print_verbose(args, f"Adding prefix '{prefix}' with delimiter '{delim}' to columns: {names}.")
-    for i in indices:
-        df.iloc[:, i] = df.iloc[:, i].astype(str).apply(lambda x: f"{prefix}{delim}{x}")
-    return df
-
-def _handle_value_counts(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    counter = Counter() if state is None else state
-    indices = _parse_multiple_columns_arg(args.column, df.columns, is_header_present, "columns (--column)")
-    if not indices:
-        raise ValueError("Error: No columns specified for value_counts.")
-    for i in indices:
-        col = df.columns[i]
-        counter.update(df[col].dropna().astype(str))
-    sorted_counts = sorted(counter.items(), key=lambda x: x[1], reverse=True)
-    summary = pd.DataFrame(sorted_counts[:args.top_n], columns=['Value', 'Count'])
-    sys.stdout.write(f"--- Top {args.top_n} Values ---\n")
-    sys.stdout.write(summary.to_string(index=False, header=True) + '\n')
-    sys.exit(0)
-
-def _handle_strip(df, args, input_sep, is_header_present, row_idx_col_name):
-    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
-    original = df.columns[col]
-    try:
-        new_series = df.iloc[:, col].astype(str).str.replace(args.pattern, '', regex=True)
-    except re.error as e:
-        raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
-    if args.in_place:
-        df.iloc[:, col] = new_series
-    else:
-        if args.new_header.startswith("_"):
-            new_header = str(original) + args.new_header
-        else:
-            new_header = args.new_header
-        if is_header_present:
-            new_header = get_unique_header(new_header, df)
-        df.insert(col+1, new_header, new_series.reset_index(drop=True))
-        _print_verbose(args, f"Inserted stripped column '{new_header}' after '{original}'.")
-    return df
-
-def _handle_numeric_map(df, args, input_sep, is_header_present, row_idx_col_name, state=None):
-    mapping, next_id = ({}, 1) if state is None else state
-    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
-    original = df.columns[col]
-    _print_verbose(args, f"Mapping unique values in '{original}' to numeric identifiers.")
-    new_header = args.new_header if args.new_header else f"numeric_map_of_{original}"
-    if is_header_present:
-        new_header = get_unique_header(new_header, df)
-    def mapper(x):
-        nonlocal next_id
-        if x not in mapping:
-            mapping[x] = next_id
-            next_id += 1
-        return mapping[x]
-    mapped = df.iloc[:, col].astype(str).apply(mapper)
-    df.insert(col+1, new_header, mapped)
-    return df, (mapping, next_id)
-
-def _handle_regex_capture(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line_content=None):
-    col = _parse_column_arg(args.column, df.columns, is_header_present, "column (--column)")
-    base = df.columns[col] if is_header_present else f"captured_column_{col+1}"
-    if args.new_header.startswith("_"):
-        new_header = str(base) + args.new_header
-    else:
-        new_header = args.new_header
-    if is_header_present:
-        new_header = get_unique_header(new_header, df)
-        _print_verbose(args, f"Using unique header: {new_header}.")
-    _print_verbose(args, f"Capturing groups using regex '{args.pattern}' on column '{base}'.")
-    try:
-        captured = df.iloc[:, col].astype(str).apply(lambda x: ';'.join(re.findall(args.pattern, x)))
-    except re.error as e:
-        raise ValueError(f"Error: Invalid regex pattern '{args.pattern}': {e}")
-    df.insert(len(df.columns), new_header, captured.reset_index(drop=True))
-    return df
-
-def _handle_view(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line=None):
+def _handle_join_meta_table(df, args, input_sep, is_header_present, row_idx_col_name):
     import sys
     import pandas as pd
+    import csv
+    import codecs
 
-    _print_verbose(args, f"Viewing data (max rows: {args.max_rows}, max cols: {args.max_cols}).")
-    pd.set_option('display.max_rows', args.max_rows)
-    pd.set_option('display.max_columns', args.max_cols)
-    pd.set_option('display.width', None)
-    pd.set_option('display.colheader_justify', 'left')
-    
-    disp = df.copy()
-    if getattr(args, "cleanup_numbers", False):
-         disp = _format_numeric_columns(disp)
-    
-    if row_idx_col_name and row_idx_col_name in disp.columns:
-        cols = [row_idx_col_name] + [col for col in disp.columns if col != row_idx_col_name]
-        disp = disp[cols]
-        _print_verbose(args, f"Moved row-index column '{row_idx_col_name}' to the front.")
-    
-    if getattr(args, "pretty_print", True):
-         sys.stdout.write(disp.to_string(index=True, header=is_header_present) + '\n')
-    else:
-         disp.to_csv(
-             sys.stdout,
-             sep=input_sep,
-             index=False,
-             header=is_header_present,
-             encoding='utf-8',
-             quoting=csv.QUOTE_NONE,
-             escapechar='\\'
-         )
-    
-    pd.reset_option('display.max_rows')
-    pd.reset_option('display.max_columns')
-    pd.reset_option('display.width')
-    pd.reset_option('display.colheader_justify')
-    
-    sys.exit(0)
+    if args.lowmem:
+        sys.stderr.write("Error: 'join_meta' operation does not support low-memory mode (--lowmem).\n")
+        sys.exit(1)
 
-def _handle_cut(df, args, input_sep, is_header_present, row_idx_col_name):
-    if args.list:
-        if not is_header_present:
-            raise ValueError("Error: File has no header (--noheader option was provided)")
-        if not args.pattern:
-            raise ValueError("Error: When using --list, you must provide a comma-separated list of column names or a file with column names.")
-        if os.path.exists(args.pattern):
-            with open(args.pattern, "r", encoding="utf-8") as f:
-                col_list = [line.strip() for line in f if line.strip()]
-        else:
-            col_list = [x.strip() for x in args.pattern.split(',') if x.strip()]
-        missing = [col for col in col_list if col not in df.columns]
-        if missing:
-            raise ValueError(f"Error: Columns not found: {missing}. Available columns: {list(df.columns)}")
-        _print_verbose(args, f"Columns selected: {col_list}.")
-        df = df[col_list]
-        return df
-    else:
-        if not args.pattern:
-            raise ValueError("Error: A pattern must be provided (either as a positional argument or with -p/--pattern) when not using --list mode.")
-        pattern = args.pattern
-        _print_verbose(args, f"Selecting columns matching pattern '{pattern}' (regex: {args.regex}).")
-        selected = []
-        for col in df.columns:
-            if args.regex:
-                try:
-                    if re.search(pattern, str(col)):
-                        selected.append(col)
-                except re.error as e:
-                    raise ValueError(f"Error: Invalid regex '{pattern}': {e}")
+    meta_sep_raw = getattr(args, "meta_sep", None) or input_sep
+    meta_sep = codecs.decode(meta_sep_raw, 'unicode_escape')
+
+    try:
+        meta_df = pd.read_csv(args.meta, sep=meta_sep, dtype=str, quoting=csv.QUOTE_NONE, escapechar='\\')
+    except Exception as e:
+        sys.stderr.write(f"Error reading metadata file '{args.meta}': {e}\n")
+        sys.exit(1)
+
+    _print_verbose(args, f"Metadata file head:\n{meta_df.head().to_string()}")
+
+    df.columns = df.columns.astype(str).str.strip()
+    meta_df.columns = meta_df.columns.astype(str).str.strip()
+
+    key_input_idx = _parse_column_arg(args.key_column_in_input, df.columns, is_header_present, "key_column_in_input")
+    key_input = df.columns[key_input_idx]
+    key_meta_idx = _parse_column_arg(args.key_column_in_meta, meta_df.columns, True, "key_column_in_meta")
+    key_meta = meta_df.columns[key_meta_idx]
+
+    df[key_input] = df[key_input].astype(str).str.strip().str.upper()
+    meta_df[key_meta] = meta_df[key_meta].astype(str).apply(remove_ansi).str.strip().str.upper()
+
+    _print_verbose(args, f"Merging metadata: joining input column '{key_input}' with metadata column '{key_meta}'.")
+
+    merged_df = df.merge(meta_df, how='left',
+                         left_on=key_input,
+                         right_on=key_meta,
+                         suffixes=("", "_meta"))
+
+    to_drop = []
+    for col in merged_df.columns:
+        if col.endswith("_meta"):
+            base = col[:-5]
+            if base in merged_df.columns:
+                merged_df[base] = merged_df[col].combine_first(merged_df[base])
+                to_drop.append(col)
             else:
-                if pattern in str(col):
-                    selected.append(col)
-        if row_idx_col_name and row_idx_col_name in df.columns and row_idx_col_name not in selected:
-            selected = [row_idx_col_name] + selected
-            _print_verbose(args, f"Including row-index column '{row_idx_col_name}' in the output.")
-        if not selected:
-            sys.stderr.write(f"Warning: No columns matched pattern '{pattern}'. Output will be empty.\n")
-            df = pd.DataFrame(columns=[])
-        else:
-            df = df[selected]
-            _print_verbose(args, f"Columns selected: {selected}.")
-        return df
+                merged_df.rename(columns={col: base}, inplace=True)
+    if to_drop:
+        merged_df.drop(columns=to_drop, inplace=True)
 
-def _handle_viewheader(df, args, input_sep, is_header_present, row_idx_col_name, raw_first_line):
-    import sys
+    return merged_df
 
-    _print_verbose(args, "Displaying header names with first data row.")
-
-    if is_header_present:
-        headers = list(df.columns)
-        if not df.empty:
-            first_data_row = [str(x) for x in df.iloc[0].tolist()]
-        else:
-            first_data_row = [""] * len(headers)
+def _handle_filter_table_cols(df, args, input_sep, is_header_present, row_idx_col_name):
+    index_col_name = None
+    if hasattr(args, "index") and args.index:
+        index_idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
+        index_col_name = df.columns[index_idx]
+    
+    keep_columns = []
+    if hasattr(args, "keep_columns") and args.keep_columns:
+        keep_columns = [col.strip() for col in args.keep_columns.split(",") if col.strip()]
+    
+    cols_to_filter = []
+    for col in df.columns:
+        if index_col_name is not None and col == index_col_name:
+            continue
+        if col in keep_columns:
+            continue
+        series = df[col].dropna()
+        match = False
+        if args.is_numeric:
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            if not series.empty and numeric_series.notna().all():
+                match = True
+        if args.is_integer:
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            if (not series.empty and numeric_series.notna().all() and
+                numeric_series.apply(lambda x: abs(x - round(x)) < 1e-8).all()):
+                match = True
+        if args.is_same:
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            if (not series.empty and numeric_series.notna().all() and numeric_series.nunique() == 1):
+                match = True
+        if args.min_value is not None:
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            if (not series.empty and numeric_series.notna().all() and (numeric_series >= args.min_value).all()):
+                match = True
+        if args.max_value is not None:
+            numeric_series = pd.to_numeric(series, errors='coerce')
+            if (not series.empty and numeric_series.notna().all() and (numeric_series <= args.max_value).all()):
+                match = True
+        if match:
+            cols_to_filter.append(col)
+    
+    if args.invert:
+        cols_to_keep = cols_to_filter[:]
+        if index_col_name is not None and index_col_name not in cols_to_keep:
+            cols_to_keep.append(index_col_name)
+        for k in keep_columns:
+            if k not in cols_to_keep and k in df.columns:
+                cols_to_keep.append(k)
+        filtered_df = df.loc[:, cols_to_keep]
     else:
-        headers = raw_first_line if raw_first_line else []
-        if not df.empty:
-            first_data_row = [str(x) for x in df.iloc[0].tolist()]
+        filtered_df = df.drop(columns=cols_to_filter)
+    
+    if index_col_name is not None:
+        final_order = [index_col_name]
+    else:
+        final_order = []
+    for k in keep_columns:
+        if k in filtered_df.columns and k not in final_order:
+            final_order.append(k)
+    for col in filtered_df.columns:
+        if col not in final_order:
+            final_order.append(col)
+    
+    filtered_df = filtered_df.reindex(columns=final_order)
+    
+    if index_col_name is not None:
+        filtered_df = filtered_df.set_index(index_col_name, drop=False)
+    return filtered_df
+
+def _handle_detect_outliers_table(df, args, input_sep, is_header_present, row_idx_col_name):
+    """
+    Detect outlier samples via Isolation Forest and annotate the table.
+
+    Adds columns:
+      - iforest_score       (float; higher = more anomalous)
+      - iforest_is_outlier  (bool)
+      - iforest_topk        (semicolon list of top-K features by |z| for that sample)
+    """
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import IsolationForest
+
+    label_col = None
+    if getattr(args, "index", None):
+        idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
+        label_col = df.columns[idx]
+
+    exclude = []
+    if label_col:
+        exclude.append(label_col)
+    if getattr(args, "exclude", None):
+        exclude += [c.strip() for c in args.exclude.split(",") if c.strip()]
+
+    numeric_df, numeric_columns = _helper_extract_numeric_columns(df, exclude_cols=exclude)
+    if not numeric_columns:
+        raise ValueError("No numeric columns found for Isolation Forest.")
+    X_df = numeric_df.dropna()
+    if X_df.empty:
+        raise ValueError("No complete rows in numeric columns for Isolation Forest.")
+
+    if getattr(args, "no_scale", False):
+        Z = X_df.values
+        Z_for_topk = (X_df - X_df.mean()).div(X_df.std(ddof=0).replace(0, np.nan)).fillna(0.0)
+    else:
+        mean = X_df.mean()
+        std = X_df.std(ddof=0).replace(0, np.nan)
+        Z_for_topk = (X_df - mean).div(std).fillna(0.0)
+        Z = Z_for_topk.values
+
+    contamination = getattr(args, "contamination", "auto") or "auto"
+    if contamination != "auto":
+        try:
+            contamination = float(contamination)
+        except ValueError:
+            raise ValueError("--contamination must be a float or 'auto'.")
+    n_estimators = int(getattr(args, "n_estimators", 200) or 200)
+    random_state = int(getattr(args, "random_state", 42) or 42)
+    top_k = int(getattr(args, "top_k", 3) or 3)
+
+    model = IsolationForest(
+        n_estimators=n_estimators,
+        contamination=contamination,
+        random_state=random_state
+    )
+    model.fit(Z)
+
+    raw = model.score_samples(Z)
+    score = -raw
+    pred = model.predict(Z)
+    is_out = (pred == -1)
+
+    score_s = pd.Series(index=df.index, dtype=float)
+    score_s.loc[X_df.index] = score
+    flag_s = pd.Series(False, index=df.index)
+    flag_s.loc[X_df.index] = is_out
+
+    topk_s = pd.Series(index=df.index, dtype=object)
+    if top_k > 0:
+        for ridx in X_df.index:
+            zrow = Z_for_topk.loc[ridx].abs().sort_values(ascending=False)
+            feats = [f"{c}:{zrow[c]:.2f}" for c in zrow.index[:top_k]]
+            topk_s.loc[ridx] = ";".join(feats)
+
+    out = df.copy()
+    out.insert(len(out.columns), "iforest_score", score_s)
+    out.insert(len(out.columns), "iforest_is_outlier", flag_s)
+    out.insert(len(out.columns), "iforest_topk", topk_s)
+
+    if getattr(args, "only_outliers", False):
+        out = out[out["iforest_is_outlier"] == True]
+
+    if getattr(args, "plot_bars", False):
+        import math
+        import matplotlib.pyplot as plt
+        try:
+            bw, bh = map(float, str(getattr(args, "bars_figsize", "12,8")).split(','))
+        except Exception:
+            bw, bh = 12.0, 8.0
+
+        outliers_idx = list(X_df.index[is_out])
+        if len(outliers_idx) == 0:
+            sys.stderr.write("NOTE: No outliers detected; no bar plots generated.\n")
         else:
-            first_data_row = [""] * len(headers)
+            mode = getattr(args, "bars_mode", "by_feature")
+            if mode == "by_sample":
+                max_panels = max(1, int(getattr(args, "bars_max_outliers", 12)))
+                panel_ids = outliers_idx[:max_panels]
+                n = len(panel_ids)
+                ncols = 3 if n >= 3 else n
+                nrows = int(math.ceil(n / ncols))
+                fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(bw, bh), squeeze=False)
+                axes = axes.ravel()
+                import numpy as np
+                max_abs = 0.0
+                per_out = {}
+                for ridx in panel_ids:
+                    zrow = Z_for_topk.loc[ridx]
+                    zabs = zrow.abs().sort_values(ascending=False)
+                    feats = list(zabs.index[:top_k])
+                    vals = zrow[feats].values
+                    per_out[ridx] = (feats, vals)
+                    if len(vals):
+                        max_abs = max(max_abs, float(np.max(np.abs(vals))))
+                xlim = 1.2 * (max_abs if max_abs > 0 else 1.0)
+                for ax, ridx in zip(axes, panel_ids):
+                    feats, vals = per_out[ridx]
+                    ax.axvline(0, lw=0.8, ls='--', alpha=0.6)
+                    ax.barh(range(len(feats)), vals, align='center')
+                    ax.set_yticks(range(len(feats)))
+                    ax.set_yticklabels(feats, fontsize=7)
+                    label = str(df.loc[ridx, label_col]) if label_col else str(ridx)
+                    score_str = f"{score_s.loc[ridx]:.3f}" if pd.notna(score_s.loc[ridx]) else "NA"
+                    ax.set_title(f"{label} (score {score_str})", fontsize=9)
+                    ax.set_xlim(-xlim, xlim)
+                    ax.grid(True, axis='x', alpha=0.2)
+                for ax in axes[len(panel_ids):]:
+                    ax.axis('off')
+            else:
+                import numpy as np
+                feat_scores = {}
+                for ridx in outliers_idx:
+                    zrow = Z_for_topk.loc[ridx].abs().sort_values(ascending=False)
+                    for f in zrow.index[:top_k]:
+                        feat_scores[f] = max(feat_scores.get(f, 0.0), float(abs(Z_for_topk.loc[ridx, f])))
+                if not feat_scores:
+                    sys.stderr.write("NOTE: No top features found among outliers; no feature panels.\n")
+                else:
+                    ordered_features = [f for f,_ in sorted(feat_scores.items(), key=lambda kv: -kv[1])]
+                    max_panels = max(1, int(getattr(args, "bars_max_outliers", 12)))
+                    features_to_plot = ordered_features[:max_panels]
+                    n = len(features_to_plot)
+                    ncols = 3 if n >= 3 else n
+                    nrows = int(math.ceil(n / ncols))
+                    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(bw, bh), squeeze=False)
+                    axes = axes.ravel()
+                    idx_all = list(X_df.index)
+                    is_out_series = pd.Series(False, index=idx_all)
+                    is_out_series.loc[outliers_idx] = True
+                    col_out = "#d62728"
+                    col_in  = "#bdbdbd"
+                    show_xlabels = len(idx_all) <= 25
+                    max_abs = 0.0
+                    for f in features_to_plot:
+                        vals = Z_for_topk[f].loc[idx_all].values
+                        if len(vals):
+                            max_abs = max(max_abs, float(np.max(np.abs(vals))))
+                    ylim = 1.2 * (max_abs if max_abs > 0 else 1.0)
+                    for ax, f in zip(axes, features_to_plot):
+                        zvals = Z_for_topk[f].loc[idx_all]
+                        colors = [col_out if is_out_series.loc[i] else col_in for i in idx_all]
+                        ax.axhline(0, lw=0.8, ls='--', alpha=0.6)
+                        ax.bar(range(len(idx_all)), zvals.values, color=colors)
+                        ax.set_title(f, fontsize=9)
+                        ax.set_ylim(-ylim, ylim)
+                        if show_xlabels:
+                            xt = [str(df.loc[i, label_col]) if label_col else str(i) for i in idx_all]
+                            ax.set_xticks(range(len(idx_all)))
+                            ax.set_xticklabels(xt, rotation=60, ha='right', fontsize=7)
+                        else:
+                            ax.set_xticks([])
+                        ax.grid(True, axis='y', alpha=0.2)
+                    for ax in axes[len(features_to_plot):]:
+                        ax.axis('off')
+                    from matplotlib.lines import Line2D
+                    handles = [Line2D([0],[0], color=col_out, lw=6, label="Outlier samples"),
+                               Line2D([0],[0], color=col_in,  lw=6, label="Non-outliers")]
+                    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False, fontsize='small')
+            out_path = getattr(args, "bars_output", None) or "iforest_bars.pdf"
+            ext = os.path.splitext(out_path)[1].lower().lstrip(".") or "pdf"
+            fig.tight_layout()
+            fig.savefig(out_path, format=ext, bbox_inches='tight', dpi=300)
+            plt.close(fig)
+    return out
 
-    if not headers:
-        sys.stderr.write("No valid header found.\n")
-        sys.exit(1)
-    if not first_data_row:
-        sys.stderr.write("No valid data row found.\n")
-        sys.exit(1)
+# Plot operations --------------------------------------------
 
-    max_header_len = max(len(header.strip()) for header in headers)
-    max_value_len = 0
-    for entry in first_data_row:
-        entry = entry.strip()
-        display_entry = (entry[:40] + '...[truncated]') if len(entry) > 40 else entry
-        max_value_len = max(max_value_len, len(display_entry))
-
-    header_idx_len = len(str(len(headers)))
-    header_format = f"{{:<{header_idx_len}}} | {{:>{max_header_len}}} | {{:<{max_value_len}}}"
-    sep_line = "-" * (header_idx_len + 1) + "+" + "-" * (max_header_len + 2) + "+" + "-" * (max_value_len + 2)
-
-    print(sep_line)
-    for i, (header, entry) in enumerate(zip(headers, first_data_row)):
-        header = header.strip()
-        entry = entry.strip()
-        display_entry = (entry[:40] + '...[truncated]') if len(entry) > 40 else entry
-        print(header_format.format(i + 1, header, display_entry))
-    print(sep_line)
-
-    sys.exit(0)
-
-def _handle_row_insert(df, args, input_sep, is_header_present, row_idx_col_name):
-    insert_pos = args.row_idx - 1
-    if args.values:
-        values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')]
-    elif df.empty:
-        sys.stderr.write("Error: Cannot insert row into an empty table without explicit values.\n")
-        sys.exit(1)
-    else:
-        values = [f"col{i+1}" for i in range(df.shape[1])]
-        _print_verbose(args, f"Generated default row values: {values}")
-    if len(values) > df.shape[1]:
-        values = values[:df.shape[1]]
-        _print_verbose(args, "Truncated row values to match column count.")
-    elif len(values) < df.shape[1]:
-        values.extend([''] * (df.shape[1] - len(values)))
-        _print_verbose(args, "Padded row values to match column count.")
-    new_row = pd.DataFrame([values], columns=df.columns)
-    if insert_pos >= len(df):
-        df = pd.concat([df, new_row], ignore_index=True)
-    else:
-        df = pd.concat([df.iloc[:insert_pos], new_row, df.iloc[insert_pos:]], ignore_index=True)
-    _print_verbose(args, f"Inserted row at position {args.row_idx}. New shape: {df.shape}.")
-    return df
-
-def _handle_row_drop(df, args, input_sep, is_header_present, row_idx_col_name):
-    drop_pos = args.row_idx - 1
-    if drop_pos < 0 or drop_pos >= len(df):
-        raise IndexError(f"Error: Row index {args.row_idx} is out of bounds. Table has {len(df)} rows.")
-    df = df.drop(df.index[drop_pos]).reset_index(drop=True)
-    _print_verbose(args, f"Dropped row at position {args.row_idx}. New shape: {df.shape}.")
-    return df
-
-# New Plot Handlers
-def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
+def _handle_plot_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
     if hasattr(args, "figure_size") and args.figure_size:
         try:
             if ',' in args.figure_size:
@@ -2339,7 +1865,6 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
     p += theme_nizar()
     p += guides(fill=guide_legend(ncol=1))
     
-    # choose format from extension
     fmt = "pdf" if args.output.lower().endswith(".pdf") else ("png" if args.output.lower().endswith(".png") else None)
     try:
         p.save(filename=args.output, width=fig_dims[0], height=fig_dims[1], format=fmt)
@@ -2348,7 +1873,7 @@ def _handle_ggplot(df, args, input_sep, is_header_present, row_idx_col_name):
         sys.exit(1)
     sys.exit(0)
 
-def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name):
+def _handle_plot_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name):
     if hasattr(args, "figure_size") and args.figure_size:
         try:
             if ',' in args.figure_size:
@@ -2400,79 +1925,450 @@ def _handle_matplotlib(df, args, input_sep, is_header_present, row_idx_col_name)
     fig.savefig(args.output, format=ext, bbox_inches='tight')
     sys.exit(0)
 
-def _handle_melt(df, args, input_sep, is_header_present, row_idx_col_name):
-    id_vars = [col.strip() for col in args.id_vars.split(',')]
-    if args.value_vars:
-        value_vars = [col.strip() for col in args.value_vars.split(',')]
+def _handle_plot_heatmap(df, args, input_sep, is_header_present, row_idx_col):
+    """
+    Generate a heatmap of samples (rows) versus features (columns) with optional dendrograms,
+    annotations, and correlation mode.
+    
+    If --corr is given, a feature–feature Spearman correlation heatmap is generated.
+    Otherwise, the numeric matrix (optionally z-scored per column) is plotted.
+    Required:
+      --index         : Column (1-indexed or name) to use as the sample label.
+    Optional:
+      --row_annotations  : Comma-separated list of columns for annotating rows.
+      --zscore           : Z-score the numeric values per column.
+      --no_row_dendro    : Disable the row dendrogram.
+      --no_col_dendro    : Disable the column dendrogram.
+      --no_cluster       : Disable both row and column clustering.
+      --linkage          : Linkage method for clustering (average, single, complete, ward).
+      --distance         : Distance metric ('1-corr' or 'euclidean').
+      --cmap             : Colormap name.
+      --grid_linewidth   : Line width between heatmap tiles.
+      --show_values      : Write numeric values on tiles.
+      --values_fmt       : Format for values (e.g., ".2f").
+      --xtick_fontsize   : Font size for x tick labels.
+      --ytick_fontsize   : Font size for y tick labels.
+      --annot_legend     : Enable legends for row annotations.
+      --right_pad        : Right padding to make room for legends.
+      --cbar_left        : Place the colorbar on the left.
+      --max_labels       : Maximum number of tick labels (beyond which they are hidden).
+    """
+    import sys, os
+    import numpy as np
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    # Get figure size from --figure_size (e.g., "8,6" or "8x6")
+    try:
+        if ',' in args.figure_size:
+            w, h = map(float, args.figure_size.split(','))
+        elif 'x' in args.figure_size.lower():
+            w, h = map(float, args.figure_size.lower().split('x'))
+        else:
+            w = h = float(args.figure_size)
+    except Exception:
+        sys.stderr.write("Error: --figure_size must be like '8,6' or '8x6'.\n")
+        sys.exit(1)
+
+    # Ensure --index is provided; use it as sample labels.
+    if not getattr(args, "index", None):
+        sys.stderr.write("Error: --index is required for 'heatmap'.\n")
+        sys.exit(1)
+    idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
+    label_col = df.columns[idx]
+
+    df = df.copy()
+    df[label_col] = df[label_col].astype(str)
+    df.set_index(label_col, inplace=True, drop=False)
+
+    # Optional row annotations.
+    row_ann_cols = []
+    if getattr(args, "row_annotations", None):
+        row_ann_cols = [c.strip() for c in args.row_annotations.split(',') if c.strip()]
+
+    corr_mode = bool(getattr(args, "corr", False))
+
+    # Select numeric columns (excluding the label and annotation columns)
+    exclude = [label_col] + row_ann_cols
+    numeric_df, numeric_columns = _helper_extract_numeric_columns(df, exclude_cols=exclude)
+
+    if corr_mode:
+        if not numeric_columns:
+            raise ValueError("No numeric columns found for correlation heatmap.")
+        data_to_plot = _corr_from_df(numeric_df)
+        row_colors_df = None
+        center = 0.0
+        cmap = getattr(args, "cmap", None) or "bwr_r"
     else:
-        value_vars = [col for col in df.columns if col not in id_vars]
-    return pd.melt(df, id_vars=id_vars, value_vars=value_vars,
-                   var_name=args.var_name, value_name=args.value_name)
+        if not numeric_columns:
+            raise ValueError("No numeric columns found for heatmap.")
+        M = numeric_df.copy()
+        if getattr(args, "zscore", False):
+            mu = M.mean(axis=0)
+            sigma = M.std(axis=0, ddof=0).replace(0, np.nan)
+            M = (M - mu).div(sigma)
+            center = 0.0
+            cmap = getattr(args, "cmap", None) or "bwr_r"
+        else:
+            center = None
+            cmap = getattr(args, "cmap", None) or "viridis"
+        all_na_cols = [c for c in M.columns if M[c].isna().all()]
+        if all_na_cols:
+            sys.stderr.write("Warning: Dropping constant/non-informative feature(s): " +
+                             ", ".join(all_na_cols) + "\n")
+            M = M.drop(columns=all_na_cols)
+            numeric_columns = [c for c in numeric_columns if c not in all_na_cols]
+        row_colors_df = None
+        if row_ann_cols:
+            ann = df.loc[M.index, row_ann_cols]
+            row_colors_df = pd.DataFrame(index=ann.index)
+            for col in row_ann_cols:
+                s = ann[col].astype('string')
+                cats = pd.Categorical(s).categories
+                pal = sns.color_palette(None, n_colors=max(3, len(cats)))
+                color_map = {cat: pal[i % len(pal)] for i, cat in enumerate(cats)}
+                row_colors_df[col] = s.map(lambda k: color_map.get(k, (0.8, 0.8, 0.8)))
+        data_to_plot = M
 
-def _handle_unmelt(df, args, input_sep, is_header_present, row_idx_col_name):
-    try:
-        unmelted_df = df.pivot(index=args.index, columns=args.columns, values=args.value)
-        unmelted_df = unmelted_df.reset_index()
-        unmelted_df.columns = [col if not isinstance(col, tuple) else '_'.join(map(str, col)).strip('_')
-                                for col in unmelted_df.columns.values]
-    except Exception as e:
-        sys.stderr.write(f"Error in unmelt operation: {e}\n")
+    if data_to_plot.empty:
+        sys.stderr.write("Error: Nothing to plot (empty matrix).\n")
         sys.exit(1)
-    return unmelted_df
 
-def _handle_add_metadata(df, args, input_sep, is_header_present, row_idx_col_name):
-    import sys
+    # Clustering options
+    cluster_rows = not getattr(args, "no_row_dendro", False)
+    cluster_cols = not getattr(args, "no_col_dendro", False)
+    if getattr(args, "no_cluster", False):
+        cluster_rows = False
+        cluster_cols = False
+    linkage_method = getattr(args, "linkage", "average")
+    distance_kind = getattr(args, "distance", "1-corr")
+    if linkage_method == "ward" and distance_kind != "euclidean":
+        sys.stderr.write("Warning: 'ward' linkage requires Euclidean distances; switching distance=euclidean.\n")
+        distance_kind = "euclidean"
+
+    row_linkage = col_linkage = None
+    if cluster_cols:
+        if distance_kind == "1-corr":
+            cmat = data_to_plot if corr_mode else _corr_from_df(data_to_plot)
+            col_linkage = _link_from_corr(cmat, method=linkage_method)
+        else:
+            Z = data_to_plot.fillna(0.0)
+            col_linkage = linkage(np.nan_to_num(pdist(Z.T, 'euclidean')), method=linkage_method)
+    if cluster_rows:
+        if distance_kind == "1-corr":
+            cmat = data_to_plot if corr_mode else _corr_from_df(data_to_plot.T)
+            row_linkage = _link_from_corr(cmat, method=linkage_method)
+        else:
+            Z = data_to_plot.fillna(0.0)
+            row_linkage = linkage(np.nan_to_num(pdist(Z, 'euclidean')), method=linkage_method)
+
+    cbar_pos = (.02, .8, .04, .18) if getattr(args, "cbar_left", False) else None
+    right_pad = float(getattr(args, "right_pad", 0.84))
+    max_labels = int(getattr(args, "max_labels", 200))
+    xticks_on = data_to_plot.shape[1] <= max_labels
+    yticks_on = data_to_plot.shape[0] <= max_labels
+
+    plot_df = data_to_plot.copy()
+    plot_mask = plot_df.isna()
+    plot_df = plot_df.fillna(0.0)
+
+    g = sns.clustermap(
+        plot_df,
+        row_linkage=row_linkage,
+        col_linkage=col_linkage,
+        row_colors=row_colors_df if (row_colors_df is not None and not corr_mode) else None,
+        cmap=cmap,
+        center=center,
+        xticklabels=xticks_on,
+        yticklabels=yticks_on,
+        cbar_pos=cbar_pos,
+        figsize=(w, h),
+        linewidths=getattr(args, "grid_linewidth", 0.0),
+    )
+
+    ax = g.ax_heatmap
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    if xticks_on:
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90, ha='center',
+                           fontsize=getattr(args, "xtick_fontsize", 8))
+    if yticks_on:
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=getattr(args, "ytick_fontsize", 7))
+
+    # Add legends for row annotations if requested.
+    if row_ann_cols and not corr_mode and getattr(args, "annot_legend", True):
+        legend_ax = g.fig.add_axes([right_pad, 0.15, 0.15, 0.7])
+        legend_ax.axis("off")
+        y0, dy = 0.95, 0.08
+        ordered_rows = g.dendrogram_row.reordered_ind if cluster_rows else list(range(plot_df.shape[0]))
+        ann_df = df.loc[plot_df.index[ordered_rows], row_ann_cols]
+        for j, col in enumerate(row_ann_cols):
+            s = ann_df[col].astype('string')
+            cats = pd.Categorical(s).categories.tolist()
+            pal = sns.color_palette(None, n_colors=max(3, len(cats)))
+            cm = {cat: pal[i % len(pal)] for i, cat in enumerate(cats)}
+            patches = [Patch(facecolor=cm[c], edgecolor='none', label=str(c)) for c in cats]
+            if s.isna().any():
+                patches.append(Patch(facecolor=(0.8,0.8,0.8), edgecolor='none', label="NA"))
+            legend_ax.legend(handles=patches, title=col, loc='upper left',
+                             bbox_to_anchor=(0.0, y0 - j*dy), frameon=False,
+                             fontsize=8, title_fontsize=9)
+
+    # Optionally overlay cell values.
+    if getattr(args, "show_values", False):
+        rows = g.dendrogram_row.reordered_ind if cluster_rows else slice(None)
+        cols = g.dendrogram_col.reordered_ind if cluster_cols else slice(None)
+        data_reordered = plot_df.iloc[rows, cols]
+        mask_reordered = plot_mask.iloc[rows, cols]
+        ny, nx = data_reordered.shape
+        for yi in range(ny):
+            for xi in range(nx):
+                if mask_reordered.iat[yi, xi]:
+                    continue
+                val = data_reordered.iat[yi, xi]
+                ax.text(xi + 0.5, yi + 0.5, f"{val:{getattr(args, 'values_fmt', '.2f')}}",
+                        ha='center', va='center', fontsize=getattr(args, "values_fontsize", 6))
+
+    g.fig.subplots_adjust(right=right_pad)
+    ext = os.path.splitext(args.output)[1].lower().lstrip(".") or "pdf"
+    g.fig.savefig(args.output, format=ext, bbox_inches='tight', dpi=300)
+    plt.close(g.fig)
+    sys.exit(0)
+def _handle_plot_pca(df, args, input_sep, is_header_present, row_idx_col):
+    """
+    PCA scatter plot with optional outside legends, loadings panel, and biplot arrows.
+    
+    Optional arguments:
+      --color_by        : Column name for color mapping.
+      --shape_by        : Column name for marker (shape) mapping.
+      --scale           : Z-scale numeric features before PCA.
+      --no_biplot       : Disable drawing of loadings arrows.
+      --legend_outside  : Place legends outside the plot.
+      --loadings_style  : Either "dots" (default, VizDimLoadings style) or "heatmap" for showing loadings.
+      --top_loadings    : Top-N features by |loading| (default: 10).
+      --loadings_height : Fraction of figure height for the loadings panel (default: 0.28).
+      
+    The final plot is saved to the output file specified by --output.
+    """
+    import numpy as np
     import pandas as pd
-    import csv
-    import codecs
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+    import math
 
-    if args.lowmem:
-        sys.stderr.write("Error: 'join_meta' operation does not support low-memory mode (--lowmem).\n")
-        sys.exit(1)
-
-    meta_sep_raw = getattr(args, "meta_sep", None) or input_sep
-    meta_sep = codecs.decode(meta_sep_raw, 'unicode_escape')
-
+    # Get figure dimensions from --figure_size ("width,height")
     try:
-        meta_df = pd.read_csv(args.meta, sep=meta_sep, dtype=str, quoting=csv.QUOTE_NONE, escapechar='\\')
+        width, height = map(float, args.figure_size.split(','))
     except Exception as e:
-        sys.stderr.write(f"Error reading metadata file '{args.meta}': {e}\n")
-        sys.exit(1)
+        raise ValueError("Invalid format for --figure_size. Expected width,height") from e
 
-    _print_verbose(args, f"Metadata file head:\n{meta_df.head().to_string()}")
+    # Resolve optional columns: row index (label), color, and shape.
+    label_col = None
+    color_col = None
+    shape_col = None
+    if getattr(args, "index", None):
+        idx = _parse_column_arg(args.index, df.columns, is_header_present, "index")
+        label_col = df.columns[idx]
+    if getattr(args, "color_by", None):
+        idx = _parse_column_arg(args.color_by, df.columns, is_header_present, "color_by")
+        color_col = df.columns[idx]
+    if getattr(args, "shape_by", None):
+        idx = _parse_column_arg(args.shape_by, df.columns, is_header_present, "shape_by")
+        shape_col = df.columns[idx]
 
-    df.columns = df.columns.astype(str).str.strip()
-    meta_df.columns = meta_df.columns.astype(str).str.strip()
+    # Exclude these columns when selecting numeric columns.
+    exclude = [c for c in [label_col, color_col, shape_col] if c]
+    numeric_df, numeric_columns = extract_numeric_columns(df, exclude_cols=exclude)
+    if not numeric_columns:
+        raise ValueError("No numeric columns found in the dataset for PCA.")
 
-    key_input_idx = _parse_column_arg(args.key_column_in_input, df.columns, is_header_present, "key_column_in_input")
-    key_input = df.columns[key_input_idx]
-    key_meta_idx = _parse_column_arg(args.key_column_in_meta, meta_df.columns, True, "key_column_in_meta")
-    key_meta = meta_df.columns[key_meta_idx]
+    # Drop incomplete rows and extract the numeric data.
+    X_df = numeric_df.dropna()
+    if X_df.empty:
+        raise ValueError("No complete rows found in numeric columns for PCA after dropping missing values.")
+    row_ids = X_df.index
 
-    df[key_input] = df[key_input].astype(str).str.strip().str.upper()
-    meta_df[key_meta] = meta_df[key_meta].astype(str).apply(remove_ansi).str.strip().str.upper()
+    # Optionally scale the features.
+    X = X_df.values
+    if getattr(args, "scale", False):
+        X = StandardScaler(with_mean=True, with_std=True).fit_transform(X)
 
-    _print_verbose(args, f"Merging metadata: joining input column '{key_input}' with metadata column '{key_meta}'.")
+    # Run PCA
+    pca_model = PCA(n_components=2)
+    scores = pca_model.fit_transform(X)
+    pc1, pc2 = scores[:, 0], scores[:, 1]
+    evr = pca_model.explained_variance_ratio_
 
-    merged_df = df.merge(meta_df, how='left',
-                         left_on=key_input,
-                         right_on=key_meta,
-                         suffixes=("", "_meta"))
+    # Prepare color mapping if requested.
+    color_values = None
+    color_handles = None
+    color_title = None
+    if color_col:
+        s = df.loc[row_ids, color_col].where(df.loc[row_ids, color_col].notna(), "NA").astype(str)
+        cats = list(pd.Categorical(s).categories)
+        try:
+            cmap = plt.colormaps.get_cmap('tab20')
+        except AttributeError:
+            cmap = plt.cm.get_cmap('tab20')
+        color_map = {cat: cmap(i % 20) for i, cat in enumerate(cats)}
+        color_values = s.map(color_map).values
+        color_title = color_col
+        color_handles = [Line2D([0], [0], marker='o', linestyle='',
+                                 markerfacecolor=color_map[c], markeredgecolor='none',
+                                 label=str(c)) for c in cats]
 
-    to_drop = []
-    for col in merged_df.columns:
-        if col.endswith("_meta"):
-            base = col[:-5]
-            if base in merged_df.columns:
-                merged_df[base] = merged_df[col].combine_first(merged_df[base])
-                to_drop.append(col)
-            else:
-                merged_df.rename(columns={col: base}, inplace=True)
-    if to_drop:
-        merged_df.drop(columns=to_drop, inplace=True)
+    # Prepare shape mapping if requested.
+    marker_values = None
+    shape_handles = None
+    shape_title = None
+    if shape_col:
+        s = df.loc[row_ids, shape_col].where(df.loc[row_ids, shape_col].notna(), "NA").astype(str)
+        cats = list(pd.Categorical(s).categories)
+        markers = ['o', 's', '^', 'D', 'P', 'X', '*', 'v', '<', '>']
+        shape_map = {cat: markers[i % len(markers)] for i, cat in enumerate(cats)}
+        marker_values = s.map(shape_map).values
+        shape_title = shape_col
+        shape_handles = [Line2D([0], [0], marker=shape_map[c], linestyle='',
+                                 markerfacecolor='gray', markeredgecolor='gray',
+                                 label=str(c)) for c in cats]
 
-    return merged_df
+    # Create figure and specify layout: scatter on top, loadings panel on bottom.
+    lh = max(0.05, min(0.9, float(getattr(args, "loadings_height", 0.28))))
+    fig = plt.figure(figsize=(width, height))
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 2, height_ratios=[1.0 - lh, lh], width_ratios=[1, 1],
+                  hspace=0.25, wspace=0.15)
+    ax = fig.add_subplot(gs[0, :])  # Scatter plot spans both columns
 
+    # Draw scatter (by groups if color and/or shape provided)
+    if color_values is None and marker_values is None:
+        ax.scatter(pc1, pc2, edgecolors='none')
+    else:
+        if color_col:
+            color_cat = df.loc[row_ids, color_col].astype(str).values
+        else:
+            color_cat = np.array(["_single"] * len(row_ids))
+        if shape_col:
+            shape_cat = df.loc[row_ids, shape_col].astype(str).values
+        else:
+            shape_cat = np.array(["_single"] * len(row_ids))
+
+        for cc in np.unique(color_cat):
+            for sc in np.unique(shape_cat):
+                mask = (color_cat == cc) & (shape_cat == sc)
+                if not np.any(mask):
+                    continue
+                c = color_map[cc] if color_col else None
+                m = shape_map[sc] if shape_col else 'o'
+                ax.scatter(pc1[mask], pc2[mask], c=[c] if c else None, marker=m, edgecolors='none')
+
+    ax.set_xlabel(f"PC1 ({evr[0]*100:.2f}%)")
+    ax.set_ylabel(f"PC2 ({evr[1]*100:.2f}%)")
+    ax.set_title("PCA Plot")
+    ax.grid(True, alpha=0.3)
+
+    # Optionally overlay biplot arrows for loadings.
+    if not getattr(args, "no_biplot", False):
+        load = pca_model.components_.T  # features x PCs
+        score_extent = np.max(np.sqrt(pc1**2 + pc2**2)) or 1.0
+        load_norm = np.max(np.sqrt(np.sum(load[:, :2]**2, axis=1))) or 1.0
+        scale = 0.33 * score_extent / load_norm
+        for i, var in enumerate(numeric_columns):
+            vx, vy = (load[i, 0] * scale, load[i, 1] * scale)
+            ax.arrow(0, 0, vx, vy, color='red', alpha=0.35, width=0.0,
+                     length_includes_head=True, head_width=0.02*score_extent)
+
+    # Legend placement (either outside or inside the plot)
+    legend_artists = []
+    def _place_legends_outside(ax, color_handles, shape_handles, color_title, shape_title):
+        blocks = [b for b in [(color_handles, color_title), (shape_handles, shape_title)] if b[0]]
+        if not blocks:
+            return
+        # Reserve room on the right for legends.
+        fig.subplots_adjust(right=(0.80 if len(blocks) == 1 else 0.70))
+        y = 1.00
+        for handles, title in blocks:
+            leg = ax.legend(handles=handles, title=title,
+                            loc="upper left", bbox_to_anchor=(1.01, y),
+                            frameon=True, fontsize="small", title_fontsize="small")
+            ax.add_artist(leg)
+            legend_artists.append(leg)
+            y -= 0.32
+
+    if getattr(args, "legend_outside", False):
+        _place_legends_outside(ax, color_handles, shape_handles, color_title, shape_title)
+    else:
+        if color_handles:
+            leg1 = ax.legend(handles=color_handles, title=color_title,
+                             loc="best", frameon=True, fontsize="small", title_fontsize="small")
+            ax.add_artist(leg1)
+        if shape_handles:
+            leg2 = ax.legend(handles=shape_handles, title=shape_title,
+                             loc="upper left", frameon=True, fontsize="small", title_fontsize="small")
+            ax.add_artist(leg2)
+
+    # Optionally add data labels if a label column is specified.
+    if label_col:
+        labels = df.loc[row_ids, label_col].astype(str)
+        if len(labels) <= 60:
+            for x, y, txt in zip(pc1, pc2, labels):
+                ax.annotate(txt, (x, y), fontsize=6, xytext=(2, 2), textcoords='offset points')
+
+    # --- Loadings panel: select top features by loading strength in PC1/PC2
+    load = pca_model.components_.T
+    pc1_load, pc2_load = load[:, 0], load[:, 1]
+    mag = np.maximum(np.abs(pc1_load), np.abs(pc2_load))
+    n = int(getattr(args, "top_loadings", 10) or 10)
+    keep_idx = np.argsort(-mag)[:max(1, n)]
+    feat = [numeric_columns[i] for i in keep_idx]
+    pc1_k = pc1_load[keep_idx]
+    pc2_k = pc2_load[keep_idx]
+
+    if getattr(args, "loadings_style", "dots") == "heatmap":
+        from matplotlib.colors import TwoSlopeNorm
+        ax_hm = fig.add_subplot(gs[1, :])
+        mat = np.vstack([pc1_k, pc2_k]).T
+        vmax = np.max(np.abs(mat)) or 1.0
+        im = ax_hm.imshow(mat, aspect='auto', cmap='bwr', norm=TwoSlopeNorm(0, -vmax, vmax))
+        ax_hm.set_yticks(range(len(feat)))
+        ax_hm.set_yticklabels(feat, fontsize=8)
+        ax_hm.set_xticks([0,1])
+        ax_hm.set_xticklabels(["PC1", "PC2"], fontsize=9)
+        ax_hm.set_title("Top loadings")
+        cb = fig.colorbar(im, ax=ax_hm, fraction=0.025, pad=0.02)
+        cb.ax.tick_params(labelsize=8)
+    else:
+        # Dot plot style (VizDimLoadings-style)
+        ax_l = fig.add_subplot(gs[1, 0])
+        ax_r = fig.add_subplot(gs[1, 1], sharey=ax_l)
+        order = np.argsort(-mag[keep_idx])
+        feat = [feat[i] for i in order]
+        pc1_k = pc1_k[order]
+        pc2_k = pc2_k[order]
+        y = np.arange(len(feat))
+        maxabs = max(np.max(np.abs(pc1_k)), np.max(np.abs(pc2_k)), 0.1)
+        lim = 1.05 * maxabs
+
+        for axd, vals, title in [(ax_l, pc1_k, "PC1 loadings"), (ax_r, pc2_k, "PC2 loadings")]:
+            axd.axvline(0, lw=0.8, ls='--', alpha=0.6)
+            axd.scatter(vals, y, s=20)
+            axd.set_xlim(-lim, lim)
+            axd.set_yticks(y)
+            axd.set_yticklabels(feat, fontsize=7)
+            axd.set_xlabel(title, fontsize=9)
+            axd.grid(True, axis='x', alpha=0.2)
+        plt.setp(ax_r.get_yticklabels(), visible=False)
+
+    ext = os.path.splitext(args.output)[1].lower().lstrip(".") or "pdf"
+    fig.savefig(args.output, format=ext, dpi=300,
+                bbox_inches="tight",
+                bbox_extra_artists=legend_artists)
+    plt.close(fig)
+    sys.exit(0)
+    
 # --------------------------
 # Custom Functions for Plotting
 # --------------------------
@@ -2580,38 +2476,39 @@ def venn_diagram(df, colnames):
 # Dispatch Table
 # --------------------------
 OPERATION_HANDLERS = {
-    "move": _handle_move,
-    "add_col": _handle_col_insert,
-    "drop_col": _handle_col_drop,
-    "filter": _handle_grep,
-    "split_col": _handle_split,
-    "join_col": _handle_join,
-    "replace": _handle_tr,
-    "sort": _handle_sort,
-    "cleanup_header": _handle_cleanup_header,
-    "cleanup_values": _handle_cleanup_values,
-    "prefix": _handle_prefix_add,
-    "stats": _handle_value_counts,
-    "strip": _handle_strip,
-    "factorize": _handle_numeric_map,
-    "extract": _handle_regex_capture,
-    "view": _handle_view,
-    "select": _handle_cut,
-    "headers": _handle_viewheader,
-    "row_insert": _handle_row_insert,
-    "row_drop": _handle_row_drop,
-    "transpose": _handle_transpose,
-    "plot": _handle_ggplot,
-    "plot_mpl": _handle_matplotlib,
-    "melt": _handle_melt,
-    "pivot": _handle_unmelt,
-    "aggregate": _handle_aggregate,
-    "join_meta": _handle_add_metadata,
-    "filter_cols": _handle_filter_columns,
-    "pca": _handle_pca,
-    "heatmap": _handle_heatmap,
-    "kv_unpack": _handle_unpack_column,
-    "detect_outliers": _handle_isolation_forest,
+    "move": _handle_move_col,
+    "add_col": _handle_insert_col,
+    "drop_col": _handle_drop_col,
+    "filter": _handle_filter_row,
+    "split_col": _handle_split_col,
+    "join_col": _handle_join_col,
+    "replace": _handle_translate_col,
+    "sort": _handle_sort_table,
+    "cleanup_header": _handle_cleanup_table_header,
+    "cleanup_values": _handle_clean_col,
+    "add_prefix": _handle_prefix_col,
+    "add_suffix": _handle_suffix_col,
+    "stats": _handle_stats_table,
+    "strip": _handle_strip_col,
+    "factorize": _handle_factorize_col,
+    "extract": _handle_capture_col,
+    "view": _handle_view_table,
+    "select": _handle_select_table,
+    "headers": _handle_headers_table,
+    "row_insert": _handle_insert_row,
+    "row_drop": _handle_drop_row,
+    "transpose": _handle_transpose_table,
+    "plot": _handle_plot_ggplot,
+    "plot_mpl": _handle_plot_matplotlib,
+    "melt": _handle_melt_table,
+    "pivot": _handle_pivot_table,
+    "aggregate": _handle_aggregate_table,
+    "join_meta": _handle_join_meta_table,
+    "filter_cols": _handle_filter_table_cols,
+    "pca": _handle_plot_pca,
+    "heatmap": _handle_plot_heatmap,
+    "kv_unpack": _handle_unpack_kv_col,
+    "detect_outliers": _handle_detect_outliers_table,
 }
 
 # --------------------------
@@ -2620,7 +2517,6 @@ OPERATION_HANDLERS = {
 def _read_input_data(args, input_sep, header_param, is_header_present, use_chunked):
     raw_first_line = []
     input_stream = args.file
-    # Compile regex for lines to ignore
     comment_pattern = re.compile(args.ignore_lines) if args.ignore_lines else None
 
     def _line_iter(fh):
@@ -2653,7 +2549,6 @@ def _read_input_data(args, input_sep, header_param, is_header_present, use_chunk
             sys.exit(1)
     else:
         try:
-            # Filter lines according to regex and join
             content = "".join(l for l in input_stream if not (comment_pattern and comment_pattern.match(l)))
             if not content.strip() and args.operation not in terminal_allow_empty:
                 sys.stderr.write(f"Error: Input is empty. '{args.operation}' requires data.\n")
@@ -2691,7 +2586,6 @@ def _write_output_data(data, args, input_sep, is_header_present, header_printed)
                 escapechar='\\'
             )
             return True
-        # Fallback for other iterable CSV outputs (rare)
         if not header_printed and is_header_present:
             data.to_csv(
                 sys.stdout,
@@ -2721,146 +2615,304 @@ def _write_output_data(data, args, input_sep, is_header_present, header_printed)
         sys.exit(1)
     return header_printed
 
-def main():
-    parser = _setup_arg_parser()
-    args = parser.parse_args()
-    if not args.operation:
-        parser.print_help()
-        sys.exit(0)
-
-    if args.lowmem and args.operation == "detect_outliers":
-        sys.stderr.write("Error: Isolation Forest is not supported in --lowmem mode.\n")
-        sys.exit(1)
-    
-    if args.operation == "join_meta" and args.lowmem:
-        sys.stderr.write("Error: 'join_meta' operation does not support low-memory mode (--lowmem).\n")
-        sys.exit(1)
-    
-    if args.noheader:
-        header_param = None
-        is_header_present = False
-    else:
-        header_param = 0
-        is_header_present = True
-
+# A common wrapper that does the input parsing, calls the handler, and writes output.
+def common_handler(handler, args):
     input_sep = codecs.decode(args.sep, 'unicode_escape')
+    is_header_present = not args.noheader
+    df, raw_first_line = _read_input_data(args, input_sep, header_param=None, is_header_present=is_header_present, use_chunked=args.lowmem)
+    row_idx = args.row_index if hasattr(args, 'row_index') else None
+    result = handler(df, args, input_sep, is_header_present, row_idx)
+    _write_output_data(result, args, input_sep, is_header_present, header_printed=False)
+
+# --------------------------
+# Exported command handler functions (renamed by group)
+# --------------------------
+def handle_prefix_col(args):
+    common_handler(_handle_prefix_col, args)
+
+def handle_suffix_col(args):
+    common_handler(_handle_suffix_col, args)
+
+def handle_split_col(args):
+    common_handler(_handle_split_col, args)
+
+def handle_join_col(args):
+    common_handler(_handle_join_col, args)
+
+def handle_cleanup_table_header(args):
+    common_handler(_handle_cleanup_table_header, args)
+
+def handle_clean_col(args):
+    common_handler(_handle_clean_col, args)
+
+def handle_insert_row(args):
+    common_handler(_handle_insert_row, args)
+
+def handle_drop_row(args):
+    common_handler(_handle_drop_row, args)
+
+def handle_transpose_table(args):
+    common_handler(_handle_transpose_table, args)
+
+def handle_aggregate_table(args):
+    common_handler(_handle_aggregate_table, args)
+
+def handle_select_table(args):
+    common_handler(_handle_select_table, args)
+
+def handle_headers_table(args):
+    common_handler(_handle_headers_table, args)
+
+def handle_view_table(args):
+    common_handler(_handle_view_table, args)
+
+def handle_join_meta_table(args):
+    common_handler(_handle_join_meta_table, args)
+
+def handle_filter_table_cols(args):
+    common_handler(_handle_filter_table_cols, args)
+
+def handle_move_col(args):
+    common_handler(_handle_move_col, args)
+
+def handle_insert_col(args):
+    common_handler(_handle_insert_col, args)
+
+def handle_drop_col(args):
+    common_handler(_handle_drop_col, args)
+
+def handle_translate_col(args):
+    common_handler(_handle_translate_col, args)
+
+def handle_stats_table(args):
+    common_handler(_handle_stats_table, args)
+
+def handle_strip_col(args):
+    common_handler(_handle_strip_col, args)
+
+def handle_factorize_col(args):
+    common_handler(_handle_factorize_col, args)
+
+def handle_capture_col(args):
+    common_handler(_handle_capture_col, args)
+
+def handle_unpack_kv_col(args):
+    common_handler(_handle_unpack_kv_col, args)
+
+def handle_filter_row(args):
+    common_handler(_handle_filter_row, args)
+
+def handle_sort_table(args):
+    common_handler(_handle_sort_table, args)
+
+def handle_plot_ggplot(args):
+    common_handler(_handle_plot_ggplot, args)
+
+def handle_plot_matplotlib(args):
+    common_handler(_handle_plot_matplotlib, args)
+
+def handle_melt_table(args):
+    common_handler(_handle_melt_table, args)
+
+def handle_pivot_table(args):
+    common_handler(_handle_pivot_table, args)
+
+def handle_plot_pca(args):
+    common_handler(_handle_plot_pca, args)
+
+def handle_plot_heatmap(args):
+    common_handler(_handle_plot_heatmap, args)
+
+def handle_detect_outliers_table(args):
+    common_handler(_handle_detect_outliers_table, args)
+
+# =============================================================================
+# Main parser and subcommands definition with command_category assignments
+# =============================================================================
+class CustomHelpFormatter(argparse.HelpFormatter):
+    def _format_action(self, action):
+        if isinstance(action, argparse._SubParsersAction):
+            return self._format_subcommands(action)
+        return super(CustomHelpFormatter, self)._format_action(action)
+
+    def _format_subcommands(self, action):
+        groups = {}
+        for cmd, subparser in action.choices.items():
+            category = getattr(subparser, 'command_category', 'Miscellaneous')
+            groups.setdefault(category, []).append((cmd, subparser.description or subparser.epilog or subparser.format_help().splitlines()[0]))
+        category_order = [
+            'Column Operations',
+            'Row Operations',
+            'Table Operations',
+            'Plotting',
+            'Advanced Operations',
+            'Miscellaneous'
+        ]
+        output = []
+        output.append("\nCommands by category:\n\n")
+        for cat in category_order:
+            if cat in groups:
+                output.append(f"  {cat}:\n")
+                for cmd, desc in sorted(groups[cat], key=lambda x: x[0].lower()):
+                    output.append(f"    {cmd:<15s} {desc}\n")
+                output.append("\n")
+        remaining = set(groups.keys()) - set(category_order)
+        for cat in sorted(remaining):
+            output.append(f"  {cat}:\n")
+            for cmd, desc in sorted(groups[cat], key=lambda x: x[0].lower()):
+                output.append(f"    {cmd:<15s} {desc}\n")
+            output.append("\n")
+        return "".join(output)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Process tabular data with various operations.",
+        formatter_class=CustomHelpFormatter
+    )
+    parser.add_argument('-f', '--file', help='Input file', required=True)
     
-    if args.lowmem and args.operation == "sort":
-        sys.stderr.write("Error: 'sort' operation cannot be performed in low-memory mode (--lowmem).\n")
-        sys.exit(1)
-    
-    use_chunked = args.lowmem and args.operation in LOWMEM_OPS
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # allow user-tunable chunksize
-    global CHUNK_SIZE
-    CHUNK_SIZE = args.chunksize
+    # --- Column Operations ---
+    sp = subparsers.add_parser('add_prefix', help='Add a prefix to specified column values')
+    sp.command_category = 'Column Operations'
+    sp.add_argument('-n', '--column', required=True, help="Columns to modify (e.g., 1,2,3)")
+    sp.add_argument('-v', '--string', required=True, help="Prefix string to add")
+    sp.add_argument('-d', '--delimiter', default='_', help="Delimiter between prefix and original value")
+    sp.set_defaults(func=handle_prefix_col)
 
-    lowmem_row = False
-    if args.operation in ["row_insert", "row_drop"]:
-        if args.row_idx == 0:
-            lowmem_row = True
-    if args.lowmem and args.operation in ["row_insert", "row_drop"] and not lowmem_row:
-        sys.stderr.write(f"Error: '{args.operation}' is not compatible with --lowmem except for row_idx 0.\n")
-        sys.exit(1)
+    sp = subparsers.add_parser('add_suffix', help='Add a suffix to specified column values')
+    sp.command_category = 'Column Operations'
+    sp.add_argument('-n', '--column', required=True, help="Columns to modify (e.g., 1,2,3)")
+    sp.add_argument('-v', '--string', required=True, help="Suffix string to add")
+    sp.add_argument('-d', '--delimiter', default='_', help="Delimiter between original value and suffix")
+    sp.set_defaults(func=handle_suffix_col)
 
-    if lowmem_row:
-        sys.stderr.write("# Processing: " + " ".join(sys.argv) + "\n")
-        if args.operation == "row_insert":
-            _print_verbose(args, "Low-memory row_insert (header insertion).")
-            first_line = args.file.readline().strip()
-            count = len(first_line.split(input_sep)) if first_line else (len(args.values.split(',')) if args.values else 1)
-            values = [codecs.decode(v.strip(), 'unicode_escape') for v in args.values.split(',')] if args.values else [f"col{i+1}" for i in range(count)]
-            if len(values) > count:
-                values = values[:count]
-            sys.stdout.write(input_sep.join(values) + '\n')
-            if first_line:
-                sys.stdout.write(first_line + '\n')
-            for line in args.file:
-                sys.stdout.write(line)
-            sys.exit(0)
-        elif args.operation == "row_drop":
-            _print_verbose(args, "Low-memory row_drop (dropping first row).")
-            try:
-                first_line = args.file.readline()
-                if not first_line.strip():
-                    sys.stderr.write("Warning: Input may be empty when dropping first row.\n")
-                for line in args.file:
-                    sys.stdout.write(line)
-            except BrokenPipeError:
-                pass
-            sys.exit(0)
+    sp = subparsers.add_parser('split_col', help='Split a column into multiple columns')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_split_col)
 
-    df_or_chunks, raw_first_line = _read_input_data(args, input_sep, header_param, is_header_present, use_chunked)
-    row_idx_col = None
-    if args.row_index:
-        if use_chunked:
-            try:
-                first_chunk = next(df_or_chunks)
-                cols = first_chunk.columns if is_header_present else pd.Index(range(first_chunk.shape[1]))
-                idx = _parse_column_arg(args.row_index, cols, is_header_present, "row_index")
-                row_idx_col = cols[idx]
-                df_or_chunks = (item for item in [first_chunk] + list(df_or_chunks))
-                _print_verbose(args, f"Row-index column: '{row_idx_col}' (index {idx}).")
-            except StopIteration:
-                sys.stderr.write("Error: Input is empty; cannot determine row_index column.\n")
-                sys.exit(1)
-        else:
-            if isinstance(df_or_chunks, pd.DataFrame):
-                idx = _parse_column_arg(args.row_index, df_or_chunks.columns, is_header_present, "row_index")
-                row_idx_col = df_or_chunks.columns[idx]
-                _print_verbose(args, f"Row-index column: '{row_idx_col}' (index {idx}).")
-            else:
-                sys.stderr.write("Error: Cannot determine row_index column in current mode.\n")
-                sys.exit(1)
+    sp = subparsers.add_parser('join_col', help='Join multiple columns into one')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_join_col)
 
-    header_printed = False
-    op_state = {}
-    handler = OPERATION_HANDLERS.get(args.operation)
-    if handler is None:
-        sys.stderr.write(f"Error: Unsupported operation '{args.operation}'.\n")
-        sys.exit(1)
+    sp = subparsers.add_parser('cleanup_values', help='Clean up values in specified columns')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_clean_col)
 
-    if use_chunked:
-        for chunk in df_or_chunks:
-            if not is_header_present:
-                chunk.columns = pd.Index(range(chunk.shape[1]))
-            if args.operation in ["filter", "factorize"]:
-                processed, op_state[args.operation] = handler(
-                    chunk, args, input_sep, is_header_present, row_idx_col,
-                    state=op_state.get(args.operation, {})
-                )
-            elif args.operation in ["view", "extract", "headers"]:
-                processed = handler(
-                    chunk, args, input_sep, is_header_present, row_idx_col, raw_first_line
-                )
-            else:
-                processed = handler(
-                    chunk, args, input_sep, is_header_present, row_idx_col
-                )
-            if row_idx_col and isinstance(processed, pd.DataFrame) and row_idx_col in processed.columns:
-                cols_order = [row_idx_col] + [col for col in processed.columns if col != row_idx_col]
-                processed = processed[cols_order]
-            header_printed = _write_output_data(processed, args, input_sep, is_header_present, header_printed)
-        if args.operation == "filter" and getattr(args, "word_file", None) and getattr(args, "list_missing_words", False):
-            with open(args.word_file, 'r', encoding='utf-8') as f:
-                word_list = [line.strip() for line in f if line.strip()]
-            matched = op_state.get(args.operation, {}).get("matched_words", set())
-            missing = set(word_list) - matched
-            sys.stderr.write("Words not seen in input: (n=" + str(len(missing)) + ") " + ", ".join(sorted(missing)) + "\n")
+    sp = subparsers.add_parser('factorize', help='Map unique string values to numbers (factorize) in a column')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_factorize_col)
+
+    sp = subparsers.add_parser('extract', help='Extract substrings from a column using regex')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_capture_col)
+
+    sp = subparsers.add_parser('replace', help='Translate values in a column using a dict file or single replacement')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_translate_col)
+
+    sp = subparsers.add_parser('strip', help='Remove a regex pattern from column values')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_strip_col)
+
+    sp = subparsers.add_parser('move', help='Move a column to a new location')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_move_col)
+
+    sp = subparsers.add_parser('add_col', help='Insert a new column')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_insert_col)
+
+    sp = subparsers.add_parser('drop_col', help='Drop one or more columns')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_drop_col)
+
+    sp = subparsers.add_parser('kv_unpack', help='Unpack key-value pairs from a column into separate columns')
+    sp.command_category = 'Column Operations'
+    sp.set_defaults(func=handle_unpack_kv_col)
+
+    # --- Row Operations ---
+    sp = subparsers.add_parser('row_insert', help='Insert a new row into the table')
+    sp.command_category = 'Row Operations'
+    sp.set_defaults(func=handle_insert_row)
+
+    sp = subparsers.add_parser('row_drop', help='Drop a row from the table')
+    sp.command_category = 'Row Operations'
+    sp.set_defaults(func=handle_drop_row)
+
+    sp = subparsers.add_parser('filter', help='Filter rows based on column criteria')
+    sp.command_category = 'Row Operations'
+    sp.set_defaults(func=handle_filter_row)
+
+    # --- Table Operations ---
+    sp = subparsers.add_parser('transpose', help='Transpose the table')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_transpose_table)
+
+    sp = subparsers.add_parser('aggregate', help='Aggregate table data by groups')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_aggregate_table)
+
+    sp = subparsers.add_parser('select', help='Select columns from the table using pattern or list')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_select_table)
+
+    sp = subparsers.add_parser('headers', help='Display table headers')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_headers_table)
+
+    sp = subparsers.add_parser('view', help='View the table data')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_view_table)
+
+    sp = subparsers.add_parser('join_meta', help='Join metadata with the table')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_join_meta_table)
+
+    sp = subparsers.add_parser('filter_cols', help='Filter table columns based on criteria')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_filter_table_cols)
+
+    sp = subparsers.add_parser('sort', help='Sort the table based on a column')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_sort_table)
+
+    sp = subparsers.add_parser('melt', help='Melt the table into a long format')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_melt_table)
+
+    sp = subparsers.add_parser('pivot', help='Pivot the table back to wide format')
+    sp.command_category = 'Table Operations'
+    sp.set_defaults(func=handle_pivot_table)
+
+    # --- Plotting ---
+    sp = subparsers.add_parser('pca', help='Perform PCA and generate a PCA plot')
+    sp.command_category = 'Plotting'
+    sp.set_defaults(func=handle_plot_pca)
+
+    sp = subparsers.add_parser('heatmap', help='Generate a heatmap plot')
+    sp.command_category = 'Plotting'
+    sp.set_defaults(func=handle_plot_heatmap)
+
+    sp = subparsers.add_parser('plot', help="Generate a plot using Plotnine (ggplot)")
+    sp.command_category = 'Plotting'
+    sp.set_defaults(func=handle_plot_ggplot)
+
+    sp = subparsers.add_parser('plot_mpl', help="Generate a plot using Matplotlib (e.g. Venn diagram)")
+    sp.command_category = 'Plotting'
+    sp.set_defaults(func=handle_plot_matplotlib)
+
+    sp = subparsers.add_parser('detect_outliers', help="Detect outliers using Isolation Forest and annotate table rows")
+    sp.command_category = 'Advanced Operations'
+    sp.set_defaults(func=handle_detect_outliers_table)
+
+    args = parser.parse_args()
+
+    if hasattr(args, 'func'):
+        args.func(args)
     else:
-        if args.operation in ["filter", "factorize"]:
-            processed_df, state = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
-        elif args.operation in ["view", "extract", "headers"]:
-            processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col, raw_first_line)
-        else:
-            processed_df = handler(df_or_chunks, args, input_sep, is_header_present, row_idx_col)
-        if args.operation == "filter" and getattr(args, "word_file", None) and getattr(args, "list_missing_words", False):
-            with open(args.word_file, 'r', encoding='utf-8') as f:
-                word_list = [line.strip() for line in f if line.strip()]
-            matched = state.get("matched_words", set()) if state else set()
-            missing = set(word_list) - matched
-            sys.stderr.write("Words not seen in input: (n=" + str(len(missing)) + ") " + ", ".join(sorted(missing)) + "\n")
-        _write_output_data(processed_df, args, input_sep, is_header_present, header_printed)
+        parser.print_help()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
