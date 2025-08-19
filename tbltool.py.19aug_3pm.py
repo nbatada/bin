@@ -25,7 +25,53 @@ import csv
 # VERSION=7.27.1 (Previous)
 # Reverted back from Aug 18 to this because lots of things got buggy as I moved to GPT5
 # ---
+'''
+Prompt for Code Refactoring and Enhancement
 
+Context & Goal
+The attached tbltool script is a command-line tool designed as a "swiss army knife" for manipulating tabular scientific data. The goal is to make it a one-stop-shop for common table processing tasks, similar in function to pandas or dplyr, but for the terminal. The vision is for it to replace traditional Unix tools like cut and sed, becoming as essential as samtools is for genomics data.
+
+Input
+I will provide the tbltool script in multiple, smaller chunks.
+
+Core Task
+Perform a thorough code review to identify and fix any bugs.
+Refactor the code based on the detailed requirements below.
+✨ Refactoring Requirements
+
+Function Naming:
+Rename all functions to a verb_noun format.
+Add a suffix of _row, _col, or _table to function names based on the data level they operate on.
+Specifically, rename:
+tr to replace_values_col
+summarize to summarize_table
+numeric_map to encode_onehot_col
+
+Code Structure & Help:
+Group the help output by row, col, table, plot, and utilities.
+Ensure all command names match their corresponding handle functions.
+Remove the lowmem option and related functions completely.
+Modularize redundant tasks by creating a helper function for common code, such as printing output.
+Separate argument parsing into its own function and call it from main.
+Do not alter the core logic unless necessary to fix a bug.
+
+New Functions:
+subset_table: A new function to print a subset of columns based on user switches:
+--only_numeric_columns
+--only_integer_columns
+--only_string_columns
+If --index and --meta_columns are provided, they should be printed first, followed by the selected subset.
+add_suffix_col: Adds a suffix to all values in a specified column.
+query_table: A function to filter and print rows based on a single-column query (e.g., column_name, operation, value). Supported operations are equal_to, less_than, and greater_than.
+
+Output
+Acknowledge each chunk of the script, state the number of lines read, and indicate you are ready for the next one.
+Once all chunks are received, confirm the total number of lines.
+Update the VERSION at the top of the script and provide a succinct, single-line summary of the changes.
+Print the fully complete and functional script, with no missing parts.
+State the number of lines in the input script and the final output script.
+
+'''
 
 # --------------------------
 # Utility Functions
