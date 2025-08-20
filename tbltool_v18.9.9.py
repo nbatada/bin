@@ -9,7 +9,6 @@ from io import StringIO
 from collections import Counter
 import csv
 from functools import wraps
-from scipy.stats import entropy as calculate_entropy
 import difflib
 
 __version__ = "8.19.9"
@@ -100,7 +99,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
         for title, items in categories.items():
             if items:
                 output_parts.append(f"\n{title.capitalize()}:")
-                output_parts.append("-"*15)
+                output_parts.append("-" * len(title))
                 # Calculate max length for right-justification
                 max_len = max(len(item['Command']) for item in items)
                 
@@ -233,8 +232,6 @@ def _handle_tbl_aggregate(df, args, column_names, **kwargs):
                 vc = grp_df[col].value_counts(normalize=args.normalize).reset_index()
                 vc.columns = ["value", "count"]
                 for _, row in vc.iterrows(): summary_rows.append({**group_dict, "aggregated_column": col, "value": row["value"], "count": row["count"]})
-            elif agg_func == "entropy":
-                summary_rows.append({**group_dict, "aggregated_column": col, "entropy": calculate_entropy(grp_df[col].value_counts())})
     return pd.DataFrame(summary_rows)
 
 @process_columns()
@@ -263,9 +260,12 @@ def _handle_tbl_unmelt(df, args, **kwargs):
     return df.pivot(index=args.index, columns=args.columns, values=args.value).reset_index()
 
 def _handle_tbl_join_meta(df, args, **kwargs):
-    meta_df = pd.read_csv(args.meta, sep=kwargs['input_sep'])
+    meta_header = 0 if not args.meta_noheader else None
+    meta_df = pd.read_csv(args.meta, sep=codecs.decode(args.meta_sep, 'unicode_escape'), header=meta_header)
+    
     key_input = _parse_single_col(args.key_column_in_input, df.columns, kwargs['is_header_present'])
-    key_meta = _parse_single_col(args.key_column_in_meta, meta_df.columns, True)
+    key_meta = _parse_single_col(args.key_column_in_meta, meta_df.columns, not args.meta_noheader)
+    
     return pd.merge(df, meta_df, how=args.how, left_on=key_input, right_on=key_meta, suffixes=tuple(args.suffixes.split(',')))
 
 @process_columns(required=False)
@@ -279,13 +279,33 @@ def _handle_row_query(df, args, column_names, **kwargs):
     return df[op_map[args.operator]]
 
 
-@process_columns()
+@process_columns(required=True, multi=False)
 def _handle_col_move(df, args, column_names, **kwargs):
-    col_name = column_names[0]
-    dest_col = _parse_single_col(args.dest_column, df.columns, kwargs['is_header_present'])
-    dest_idx = df.columns.get_loc(dest_col)
-    data = df.pop(col_name)
-    df.insert(dest_idx, col_name, data)
+    """Moves a column to a position relative to another column."""
+    col_to_move = column_names[0]
+    dest_col_name = args.dest_column
+
+    if col_to_move == dest_col_name:
+        return df # Nothing to do
+
+    # Pop the source column out of the DataFrame first
+    source_data = df.pop(col_to_move)
+
+    # Now, find the index of the destination column in the MODIFIED DataFrame
+    # Use the original list of columns to handle moving a column "after" itself
+    temp_cols = df.columns.tolist()
+    if dest_col_name not in temp_cols:
+         raise ValueError(f"Destination column '{dest_col_name}' not found.")
+         
+    dest_idx = temp_cols.index(dest_col_name)
+
+    # Adjust index if moving "after" the destination
+    if args.position == 'after':
+        dest_idx += 1
+    
+    # Insert the column at the correct, newly calculated index
+    df.insert(dest_idx, col_to_move, source_data)
+    
     return df
 
 @process_columns()
@@ -327,8 +347,11 @@ def _handle_col_join(df, args, column_names, **kwargs):
     df_copy.insert(min_idx, new_header, joined_series)
     return df_copy
 
-@process_columns()
+@process_columns(multi=False)
 def _handle_col_replace(df, args, column_names, **kwargs):
+    if args.from_val is not None and args.to_val is None:
+        raise ValueError("--to-val is required when --from-val is specified.")
+    
     col_name = column_names[0]
     if args.dict_file:
         mapping = dict(line.strip().split('\t', 1) for line in open(args.dict_file) if '\t' in line)
@@ -337,8 +360,11 @@ def _handle_col_replace(df, args, column_names, **kwargs):
         from_val = codecs.decode(args.from_val, 'unicode_escape')
         to_val = codecs.decode(args.to_val, 'unicode_escape')
         translated = df[col_name].astype(str).str.replace(from_val, to_val, regex=args.regex)
-    if args.in_place: df[col_name] = translated
-    else: df.insert(df.columns.get_loc(col_name) + 1, _get_unique_header(f"{col_name}_translated", df.columns), translated)
+    
+    if args.in_place:
+        df[col_name] = translated
+    else:
+        df.insert(df.columns.get_loc(col_name) + 1, _get_unique_header(f"{col_name}_translated", df.columns), translated)
     return df
 
 @process_columns(multi=True)
@@ -362,26 +388,17 @@ def _handle_col_add_suffix(df, args, column_names, **kwargs):
 
 @process_columns(multi=True)
 def _handle_col_frequency(df, args, column_names, **kwargs):
-    """Calculates and displays the top N most frequent values in a wide format."""
     results_dict = {}
-    total_rows = len(df)
-
-    # Ensure there's data to process
-    if total_rows == 0:
-        return pd.DataFrame({col: [] for col in column_names})
-
     for col in column_names:
-        # Get top N value counts
+        # Denominator is the count of non-NA values in the specific column
+        denominator = df[col].notna().sum()
+        if denominator == 0:
+            results_dict[col] = [""] * args.top_n
+            continue
+
         value_counts = df[col].value_counts().nlargest(args.top_n)
-        
-        col_results = []
-        # Format each value into the "Value (Count, Frequency%)" string
-        for value, count in value_counts.items():
-            frequency = (count / total_rows) * 100
-            formatted_string = f"{value} ({count}, {frequency:.2f}%)"
-            col_results.append(formatted_string)
+        col_results = [f"{val} ({count}, {(count / denominator) * 100:.2f}%)" for val, count in value_counts.items()]
             
-        # Pad the list with empty strings if there are fewer unique values than top_n
         while len(col_results) < args.top_n:
             col_results.append("")
             
@@ -409,19 +426,36 @@ def _handle_col_encode(df, args, column_names, **kwargs):
 
 @process_columns(multi=True)
 def _handle_col_capture_regex(df, args, column_names, **kwargs):
-    try: re.compile(args.pattern)
-    except re.error as e: raise ValueError(f"Invalid regex pattern: {e}")
+    try:
+        re.compile(args.pattern)
+    except re.error as e:
+        raise ValueError(f"Invalid regex pattern: {e}")
+
     for col in column_names:
-        extracted = df[col].astype(str).str.extractall(args.pattern)
-        if extracted.empty: continue
-        if isinstance(extracted, pd.DataFrame) and extracted.shape[1] > 1:
-            base = f"{col}_capture"
-            extracted.columns = [_get_unique_header(f"{base}_{i+1}", df.columns) for i in range(extracted.shape[1])]
+        if args.explode:
+            # Explode behavior: extract all matches, potentially creating new rows
+            extracted = df[col].astype(str).str.extractall(args.pattern)
+            if extracted.empty:
+                continue
+            if isinstance(extracted, pd.DataFrame) and extracted.shape[1] > 1:
+                base = f"{col}_capture"
+                extracted.columns = [_get_unique_header(f"{base}_{i+1}", df.columns) for i in range(extracted.shape[1])]
+            else:
+                extracted.columns = [_get_unique_header(f"{col}_captured", df.columns)]
+            
+            # Join back, which duplicates rows for multiple matches
+            df = df.drop(columns=extracted.columns, errors='ignore').join(extracted.droplevel(1))
         else:
-            extracted.columns = [_get_unique_header(f"{col}_captured", df.columns)]
-        
-        extracted = extracted.reset_index().set_index('level_0')
-        df = df.join(extracted.drop(columns='match', errors='ignore'))
+            # Default behavior: extract first match only
+            extracted = df[col].astype(str).str.extract(args.pattern)
+            if extracted.shape[1] > 1:
+                base = f"{col}_capture"
+                extracted.columns = [_get_unique_header(f"{base}_{i+1}", df.columns) for i in range(extracted.shape[1])]
+            else:
+                extracted.columns = [_get_unique_header(f"{col}_captured", df.columns)]
+            
+            df = pd.concat([df, extracted], axis=1)
+            
     return df
 
 @process_columns(required=False, multi=True)
@@ -509,10 +543,9 @@ def _setup_arg_parser():
     io_opts.add_argument("-f", "--file", type=argparse.FileType('r'), default=sys.stdin, help="Input file (default: stdin).")
     io_opts.add_argument("-s", "--sep", default="\t", help="Field separator for input and output.")
     io_opts.add_argument("--noheader", action="store_true", help="Input has no header.")
-    io_opts.add_argument("-r", "--row-index", help="Column to use as row identifier.")
     io_opts.add_argument("--quotechar", default='"', help="Character used to quote fields.")
     io_opts.add_argument("--escapechar", default=None, help="Character used to escape separators in fields.")
-    io_opts.add_argument("--doublequote", action='store_true', help="Whether to interpret two consecutive quotechars as a single quotechar.")
+    io_opts.add_argument("--doublequote", action=argparse.BooleanOptionalAction, default=True, help="Use --no-doublequote to disable standard CSV quote handling.")
     io_opts.add_argument("--na-values", help="Comma-separated list of strings to recognize as NA/NaN.")
     io_opts.add_argument("--na-rep", default="", help="String representation for NA/NaN values in output.")
     io_opts.add_argument("--on-bad-lines", choices=['error', 'warn', 'skip'], default='error', help="Action for lines with too many fields.")
@@ -524,7 +557,7 @@ def _setup_arg_parser():
     p_t_agg = subparsers.add_parser("tbl_aggregate", help="Group and aggregate data.", description="Group and aggregate data.")
     p_t_agg.add_argument("-c", "--columns", required=True, help="Columns to aggregate.")
     p_t_agg.add_argument("--group", required=True, help="Columns to group by.")
-    p_t_agg.add_argument("--agg", required=True, choices=['sum', 'mean', 'value_counts', 'entropy'])
+    p_t_agg.add_argument("--agg", required=True, choices=['sum', 'mean', 'value_counts'])
     p_t_agg.add_argument("--normalize", action="store_true")
     p_t_sort = subparsers.add_parser("tbl_sort", help="Sort table by a column.", description="Sort table by a column.")
     p_t_sort.add_argument("-c", "--columns", required=True, help="Column to sort by.")
@@ -544,6 +577,8 @@ def _setup_arg_parser():
     p_t_join.add_argument("--key_column_in_meta", required=True)
     p_t_join.add_argument("--how", choices=['left', 'right', 'outer', 'inner'], default='left')
     p_t_join.add_argument("--suffixes", default="_x,_y")
+    p_t_join.add_argument("--meta-sep", default="\t", help="Separator for the metadata file.")
+    p_t_join.add_argument("--meta-noheader", action="store_true", help="Specify if the metadata file has no header.")
 
     # Row Operations
     p_r_query = subparsers.add_parser("row_query", help="Filter rows on a condition.", description="Filter rows on a condition.")
@@ -573,9 +608,11 @@ def _setup_arg_parser():
     type_group.add_argument("--only_integer", action="store_true", help="Select all integer columns.")
     type_group.add_argument("--only_string", action="store_true", help="Select all string columns.")
 
-    p_c_move = subparsers.add_parser("col_move", help="Move a column.", description="Move a column.")
-    p_c_move.add_argument("-c", "--columns", required=True, help="Source column.")
-    p_c_move.add_argument("-j", "--dest-column", required=True)
+    p_c_move = subparsers.add_parser("col_move", help="Move a column to a new position.", description="Move a column to a new position.")
+    p_c_move.add_argument("-c", "--columns", required=True, help="The source column to move.")
+    p_c_move.add_argument("-j", "--dest-column", required=True, help="The destination column to move relative to.")
+    p_c_move.add_argument("--position", choices=['before', 'after'], default='before', help="Position relative to the destination column.")
+
     p_c_add = subparsers.add_parser("col_add", help="Insert a new column.", description="Insert a new column.")
     p_c_add.add_argument("-c", "--columns", required=True, help="Position for insertion.")
     p_c_add.add_argument("-v", "--value", required=True)
@@ -601,6 +638,21 @@ def _setup_arg_parser():
     p_c_replace.add_argument("--to-val")
     p_c_replace.add_argument("--regex", action="store_true")
     p_c_replace.add_argument("--in-place", action="store_true")
+    # Add this block for col_clean_values
+    p_c_clean = subparsers.add_parser("col_clean_values", help="Clean string values in column(s).", description="Clean string values in column(s).")
+    p_c_clean.add_argument("-c", "--columns", required=True, help="Column(s) to clean ('all' for all).")
+
+    # Add this block for col_add_prefix
+    p_c_prefix = subparsers.add_parser("col_add_prefix", help="Add a prefix to values in column(s).", description="Add a prefix to values in column(s).")
+    p_c_prefix.add_argument("-c", "--columns", required=True, help="Column(s) to modify ('all' for all).")
+    p_c_prefix.add_argument("-v", "--string", required=True, help="The prefix string to add.")
+    p_c_prefix.add_argument("-d", "--delimiter", default="", help="Delimiter to place between prefix and value.")
+
+    # Add this block for col_add_suffix
+    p_c_suffix = subparsers.add_parser("col_add_suffix", help="Add a suffix to values in column(s).", description="Add a suffix to values in column(s).")
+    p_c_suffix.add_argument("-c", "--columns", required=True, help="Column(s) to modify ('all' for all).")
+    p_c_suffix.add_argument("-v", "--string", required=True, help="The suffix string to add.")
+    p_c_suffix.add_argument("-d", "--delimiter", default="", help="Delimiter to place between value and suffix.")
 
     p_c_frequency = subparsers.add_parser("col_frequency", help="Get top N frequent values for column(s).", description="Get top N frequent values for column(s).")
     p_c_frequency.add_argument("-c", "--columns", required=True, help="Column(s) to analyze ('all' for all columns).")
@@ -613,10 +665,11 @@ def _setup_arg_parser():
     p_c_encode = subparsers.add_parser("col_encode", help="Encode categorical column to numbers.", description="Encode categorical column to numbers.")
     p_c_encode.add_argument("-c", "--columns", required=True)
     p_c_encode.add_argument("--new-header")
-    p_c_capture = subparsers.add_parser("col_capture_regex", help="Capture regex group(s).", description="Capture regex group(s).")
+
+    p_c_capture = subparsers.add_parser("col_capture_regex", help="Capture regex group(s) from a column.", description="Capture regex group(s) from a column.")
     p_c_capture.add_argument("-c", "--columns", required=True)
     p_c_capture.add_argument("-p", "--pattern", required=True)
-
+    p_c_capture.add_argument("--explode", action="store_true", help="Create a new row for each match if multiple matches are found in a cell.")
     
     # Utility Operations
     p_u_view = subparsers.add_parser("view", help="Display formatted table.", description="Display formatted table.")
@@ -625,18 +678,27 @@ def _setup_arg_parser():
     p_u_view.add_argument("--no-truncate", action="store_true", help="Disable column truncation.")
     p_u_view.add_argument("-H", "--header-view", action="store_true")
     p_u_view.add_argument("--show-index", action="store_true")
-    
+    p_u_view.add_argument("-r", "--row-index", help="Column to use as a row identifier (will be moved to the first position).")
+
     return parser, subparsers
 
 OPERATION_HANDLERS = { "tbl_transpose": _handle_tbl_transpose, "tbl_aggregate": _handle_tbl_aggregate, "tbl_sort": _handle_tbl_sort, "tbl_clean_header": _handle_tbl_clean_header, "tbl_melt": _handle_tbl_melt, "tbl_unmelt": _handle_tbl_unmelt, "tbl_join_meta": _handle_tbl_join_meta, "row_query": _handle_row_query, "col_move": _handle_col_move, "col_add": _handle_col_add, "col_drop": _handle_col_drop, "col_split": _handle_col_split, "col_join": _handle_col_join, "col_replace": _handle_col_replace, "col_clean_values": _handle_col_clean_values, "col_add_prefix": _handle_col_add_prefix, "col_add_suffix": _handle_col_add_suffix, "col_frequency": _handle_col_frequency, "col_strip_chars": _handle_col_strip_chars, "col_encode": _handle_col_encode, "col_capture_regex": _handle_col_capture_regex, "col_select": _handle_col_select, "row_grep": _handle_row_grep, "row_add": _handle_row_add, "row_drop": _handle_row_drop, "view": _handle_view }
 
 def _read_input_data(args, sep, header):
+    na_values = args.na_values.split(',') if args.na_values else None
     try:
-        content = args.file.read()
-        if not content.strip(): return pd.DataFrame()
-        na_values = args.na_values.split(',') if args.na_values else None
-        return pd.read_csv(StringIO(content), sep=sep, header=header, dtype=str, engine='python', quotechar=args.quotechar, escapechar=args.escapechar, doublequote=args.doublequote, na_values=na_values, on_bad_lines=args.on_bad_lines)
-    except Exception as e: sys.stderr.write(f"Error reading input data: {e}\n"); sys.exit(1)
+        df = pd.read_csv(
+            args.file, sep=sep, header=header, dtype=str, engine='python',
+            quotechar=args.quotechar, escapechar=args.escapechar,
+            doublequote=args.doublequote, na_values=na_values,
+            on_bad_lines=args.on_bad_lines
+        )
+        return df
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+    except Exception as e:
+        sys.stderr.write(f"Error reading input data: {e}\n")
+        sys.exit(1)
 
 def _write_output(df, sep, is_header, na_rep):
     if df is not None and not df.empty:
